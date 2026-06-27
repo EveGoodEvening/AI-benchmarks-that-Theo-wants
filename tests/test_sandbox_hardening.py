@@ -233,6 +233,253 @@ def test_bwrap_backend_validates_git_argv_before_invoke(tmp_path: Path) -> None:
     )
 
 
+
+# ---------------------------------------------------------------------------
+# C07 second-pass: git config key confinement, path-operand confinement,
+# rebase -x/--exec shell-escape removal, and bwrap BoundaryViolation capture.
+# ---------------------------------------------------------------------------
+
+
+def test_git_config_dangerous_keys_denied_and_recorded(tmp_path: Path) -> None:
+    """``git config`` is constrained to ``user.name``/``user.email`` only.
+
+    Dangerous config keys that arm a follow-up git invocation with an external
+    helper, pager, editor, hook path, or alias shell escape are rejected at
+    the allowlist chokepoint and recorded as boundary violations.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for key in [
+        "diff.external", "core.pager", "core.editor", "credential.helper",
+        "core.hooksPath", "alias.x", "core.sshCommand", "core.askpass",
+        "gc.auto", "filter.lfs.clean",
+    ]:
+        row = _dispatch(root, "git", ("config", key, "malicious"))
+        assert row.sandbox_boundary_violation is True, (
+            f"config {key}: expected boundary violation, got "
+            f"{row.violation_reason!r}"
+        )
+        assert row.exit_code == 126
+        assert "safe-key" in (row.violation_reason or "").lower() or key in (
+            row.violation_reason or ""
+        ), f"config {key}: reason {row.violation_reason!r}"
+
+
+def test_git_config_safe_keys_pass_allowlist(tmp_path: Path) -> None:
+    """Only ``user.name``/``user.email`` config keys pass the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [
+        ("config", "user.name", "fixture"),
+        ("config", "user.email", "fixture@ai-bench.local"),
+        ("config", "--local", "user.name", "fixture"),
+        ("config", "--get", "user.name"),
+        ("config", "--list"),
+    ]:
+        row = _dispatch(root, "git", argv)
+        assert not row.sandbox_boundary_violation, (
+            f"{argv}: safe config rejected by allowlist: {row.violation_reason}"
+        )
+
+
+def test_git_config_global_system_scope_denied(tmp_path: Path) -> None:
+    """``--global``/``--system`` config scopes reach host config and are denied."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for opt in ("--global", "--system"):
+        row = _dispatch(root, "git", ("config", opt, "user.name", "x"))
+        assert row.sandbox_boundary_violation is True, (
+            f"config {opt}: expected violation, got {row.violation_reason!r}"
+        )
+        assert "allowlist" in (row.violation_reason or "").lower()
+
+
+def test_git_config_diff_external_with_diff_subcommand_still_confined(
+    tmp_path: Path,
+) -> None:
+    """Regression: ``diff.external`` cannot be armed via config and then used.
+
+    The config key is rejected at the allowlist, so a subsequent ``git diff``
+    cannot invoke an external diff helper.  This test pins the config-side
+    half of the ``diff.external`` + ``diff`` regression pair.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("config", "diff.external", "/bin/echo"))
+    assert row.sandbox_boundary_violation is True
+    assert "diff.external" in (row.violation_reason or "")
+    # And the bare diff subcommand itself must not be flagged as a violation
+    # (it is a safe read-only inspection subcommand).
+    row = _dispatch(root, "git", ("diff", "--stat"))
+    assert not row.sandbox_boundary_violation, (
+        f"git diff --stat flagged as violation: {row.violation_reason}"
+    )
+
+
+def test_git_relative_path_operand_dotdot_escape_denied(tmp_path: Path) -> None:
+    """Relative git path operands with ``..`` that escape the sandbox are denied.
+
+    Covers ``config --file ../host.cfg``, ``diff --no-index ../outside``, and
+    ``init ../escape`` from the C07 second-pass findings.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    (root / "sub").mkdir()
+    (root / "sibling").mkdir()
+    for argv, cwd in [
+        (("config", "--file", "../host.cfg", "user.name"), "."),
+        (("diff", "--no-index", "../outside", "inside"), "."),
+        (("init", "../escape"), "."),
+        (("add", "../escape"), "."),
+        (("commit", "-F", "../escape"), "."),
+        (("add", "../../etc"), "sub"),
+    ]:
+        row = _dispatch(root, "git", argv, cwd=cwd)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv} cwd={cwd}: expected escape violation, got "
+            f"{row.violation_reason!r}"
+        )
+        assert row.exit_code == 126
+        assert "escape" in (row.violation_reason or "").lower() or ".." in (
+            row.violation_reason or ""
+        ), f"{argv}: reason {row.violation_reason!r}"
+
+
+def test_git_in_sandbox_dotdot_traversal_allowed(tmp_path: Path) -> None:
+    """In-sandbox ``..`` traversals that stay under root are NOT rejected.
+
+    ``add ../sibling/file`` from a subdirectory whose ``..`` stays inside the
+    sandbox root must pass confinement (git may then fail, but not with a
+    boundary violation).  This guards against the confinement becoming too
+    tight and breaking legitimate in-sandbox relative paths.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    (root / "sub").mkdir()
+    (root / "sibling").mkdir()
+    row = _dispatch(root, "git", ("add", "../sibling/file"), cwd="sub")
+    assert not row.sandbox_boundary_violation, (
+        f"in-sandbox ../sibling/file rejected: {row.violation_reason}"
+    )
+
+
+def test_git_non_path_option_value_not_confined(tmp_path: Path) -> None:
+    """Non-path option values (e.g. ``commit -m``) are not treated as paths.
+
+    A commit message containing ``..`` must NOT be confined as a path operand;
+    only path-taking option values and positional path operands are confined.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [
+        ("commit", "-m", "../notes"),
+        ("commit", "--message=../notes"),
+        ("rebase", "--onto", "main", "topic"),
+        ("checkout", "-b", "../branch"),
+        ("blame", "-L", "1,10", "file"),
+    ]:
+        row = _dispatch(root, "git", argv)
+        assert not row.sandbox_boundary_violation, (
+            f"{argv}: non-path value confined as path: {row.violation_reason}"
+        )
+
+
+def test_git_path_taking_option_value_confined(tmp_path: Path) -> None:
+    """Path-taking option values (``-F``, ``--file``, ``--separate-git-dir``) are confined."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [
+        ("commit", "-F", "../escape"),
+        ("tag", "-F", "../escape"),
+        ("merge", "-F", "../escape"),
+        ("init", "--separate-git-dir", "../escape"),
+        ("mv", "--pathspec-from-file", "../escape"),
+        ("reset", "--pathspec-from-file", "../escape"),
+        ("ls-files", "--exclude-from", "../escape"),
+    ]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: path-taking option value escape not caught: "
+            f"{row.violation_reason!r}"
+        )
+
+
+def test_git_rebase_exec_short_option_denied(tmp_path: Path) -> None:
+    """``git rebase -x <cmd>`` runs a shell command per commit and is denied."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("rebase", "-x", "sh -c 'evil'"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "allowlist" in (row.violation_reason or "").lower()
+
+
+def test_git_rebase_exec_long_option_denied(tmp_path: Path) -> None:
+    """``git rebase --exec <cmd>`` is a forbidden shell-exec option."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("rebase", "--exec", "evil"))
+    assert row.sandbox_boundary_violation is True
+    assert "forbidden" in (row.violation_reason or "").lower()
+
+
+def test_git_cherry_pick_x_not_treated_as_exec(tmp_path: Path) -> None:
+    """``git cherry-pick -x`` appends a message, not shell exec; it must pass.
+
+    Guards against over-broad removal of ``-x``: only ``rebase -x`` is exec.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("cherry-pick", "-x", "abc"))
+    assert not row.sandbox_boundary_violation, (
+        f"cherry-pick -x flagged as exec: {row.violation_reason}"
+    )
+
+
+def test_bwrap_backend_catches_boundary_violation(tmp_path: Path) -> None:
+    """The bwrap backend records a BoundaryViolation as a transcript row.
+
+    A path-operand escape raises ``BoundaryViolation`` from the shared
+    ``_confine_git_path_args`` chokepoint; the bwrap backend MUST catch it and
+    return a violation row instead of propagating out of ``dispatch`` and
+    crashing the runner.  Verified without a real ``bwrap`` install by
+    stubbing availability: the violation is raised BEFORE any subprocess.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git",
+        argv=("add", "../escape"),
+        cwd=".",
+        env_overrides={},
+        timeout_ms=None,
+    )
+    orig = SB._bwrap_available
+    SB._bwrap_available = lambda: True
+    try:
+        dispatcher = SB.BwrapSandboxDispatcher()
+        row = dispatcher.dispatch(action, sandbox=handle)
+    finally:
+        SB._bwrap_available = orig
+    assert row.sandbox_boundary_violation is True, (
+        f"bwrap did not record BoundaryViolation as a row: {row.violation_reason!r}"
+    )
+    assert row.exit_code == 126
+    assert "escape" in (row.violation_reason or "").lower()
+
+
+def test_bwrap_backend_uses_path_confinement_chokepoint(tmp_path: Path) -> None:
+    """The bwrap backend confines git path operands through the shared chokepoint."""
+    import inspect
+    src = inspect.getsource(SB.BwrapSandboxDispatcher._dispatch_bwrap_git)
+    assert "_confine_git_path_args" in src, (
+        "bwrap backend must confine git path operands via _confine_git_path_args"
+    )
+    assert "BoundaryViolation" in src, (
+        "bwrap backend must catch BoundaryViolation and return a violation row"
+    )
+
 # ---------------------------------------------------------------------------
 # Environment / credential stripping
 # ---------------------------------------------------------------------------

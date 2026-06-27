@@ -256,14 +256,12 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
     "show-ref": frozenset({"--head", "--tags", "--heads", "--verify", "-s",
                            "--hash", "--abbrev", "--dereference", "-d", "-q",
                            "--quiet", "--all", "--exclude-existing"}),
-    "config": frozenset({"--file", "-f", "--global", "--local", "--system",
-                         "--list", "-l", "--get", "--get-all", "--get-regexp",
-                         "--get-urlmatch", "--add", "--unset", "--unset-all",
-                         "--replace-all", "--rename-section", "--remove-section",
-                         "-e", "--edit", "--null", "-z", "--name-only",
-                         "--includes", "--no-includes", "--bool", "--int",
-                         "--bool-or-int", "--path", "--type", "--show-origin",
-                         "--show-scope", "--default", "--get-revpath"}),
+    "config": frozenset({"--local", "--file", "-f", "--list", "-l",
+                         "--get", "--get-all", "--add", "--unset",
+                         "--unset-all", "--replace-all", "--null", "-z",
+                         "--name-only", "--bool", "--int", "--bool-or-int",
+                         "--path", "--type", "--show-origin", "--show-scope",
+                         "--default"}),
     "var": frozenset({"-l", "--list"}),
     "init": frozenset({"-q", "--quiet", "--bare", "--template", "--shared",
                        "-b", "--initial-branch", "--separate-git-dir",
@@ -349,7 +347,7 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
                          "--verbose", "--stat", "--no-stat", "--autostash",
                          "--no-autostash", "--no-ff", "--ff", "--no-verify",
                          "--verify", "-m", "--merge", "--no-keep-empty",
-                         "--keep-empty", "--root", "-x", "--exec",
+                         "--no-keep-empty", "--keep-empty", "--root",
                          "--strategy", "-s", "--strategy-option", "-X",
                          "--rerere-autoupdate", "--no-rerere-autoupdate",
                          "--gpg-sign", "--no-gpg-sign", "-z"}),
@@ -375,6 +373,100 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
                      "-z"}),
 }
 
+# C07 review: ``git config`` is constrained to the two safe local identity
+# keys.  Dangerous config keys (``diff.external``, ``core.pager``/``core.editor``,
+# ``credential.helper``, ``core.hooksPath``, ``alias.*``, ``core.sshCommand``,
+# ``gc.*``, ``filter.*``, ``merge.*`` external-program drivers, etc.) are
+# rejected outright so a sandboxed action cannot arm a follow-up git invocation
+# with an external helper, pager, editor, hook path, or alias shell escape.
+_SAFE_GIT_CONFIG_KEYS: frozenset[str] = frozenset({"user.name", "user.email"})
+
+# ``git config`` options that consume the following argv slot as a value
+# (so the key positional can be located correctly).  ``--file``/``-f`` take a
+# config-file path (confined by the path-operand checks); ``--default`` and
+# ``--type`` take a value that is not a config key.
+_GIT_CONFIG_VALUE_OPTIONS: frozenset[str] = frozenset(
+    {"--file", "-f", "--default", "--type"}
+)
+
+# Options (across subcommands) whose following argv slot is a filesystem path
+# that MUST be confined to the sandbox root.  These are the path-taking option
+# forms; their values are checked by :func:`_confine_git_path_args` in addition
+# to the per-subcommand positional path confinement.
+_GIT_PATH_TAKING_OPTIONS: frozenset[str] = frozenset(
+    {"--file", "-f", "--exclude-from", "-X", "--separate-git-dir",
+     "--template", "--path", "--git-path", "--pathspec-from-file",
+     "-F", "--output"}
+)
+
+# Per-subcommand options that consume the following argv slot as a value (in
+# ``--option value`` form, not ``--option=value``).  This is consulted by
+# :func:`_confine_git_path_args` so that a non-path value (e.g. ``commit -m
+# "../notes"``) is NOT mistaken for a positional path operand and confined.
+# Path-taking options (``_GIT_PATH_TAKING_OPTIONS``) are a subset whose value
+# IS confined; the rest consume a non-path value that is skipped.  Options not
+# listed here are treated as flags (they consume no following slot).
+_GIT_VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "log": frozenset({"--pretty", "--format", "--max-count", "-n", "--skip",
+                      "--since", "--until", "--author", "--grep", "--abbrev"}),
+    "show": frozenset({"--pretty", "--format"}),
+    "diff": frozenset({"--word-diff-regex", "--abbrev"}),
+    "blame": frozenset({"-L", "--before", "--after", "--abbrev", "-C", "-M",
+                        "-n", "-l"}),
+    "shortlog": frozenset({"--group"}),
+    "describe": frozenset({"--abbrev", "--candidates"}),
+    "rev-parse": frozenset({"--short", "--default", "--abbrev-ref",
+                            "--git-path"}),
+    "rev-list": frozenset({"--max-count", "-n", "--skip", "--since",
+                           "--until", "--author", "--grep"}),
+    "ls-files": frozenset({"--exclude", "-x", "--exclude-from", "-X",
+                           "--abbrev"}),
+    "ls-tree": frozenset({"--abbrev"}),
+    "cat-file": frozenset({"--batch", "--batch-check", "--path"}),
+    "name-rev": frozenset({"--refs"}),
+    "reflog": frozenset({"--expire", "--expire-unreachable", "-n",
+                         "--pretty", "--format"}),
+    "for-each-ref": frozenset({"--count", "--format", "--sort",
+                               "--points-at", "--merged", "--no-merged",
+                               "--contains", "--no-contains", "--exclude"}),
+    "symbolic-ref": frozenset({"-m", "--message"}),
+    "show-ref": frozenset({"--abbrev", "--exclude-existing"}),
+    "config": frozenset({"--file", "-f", "--default", "--type", "--path"}),
+    "init": frozenset({"--template", "--shared", "-b", "--initial-branch",
+                       "--separate-git-dir", "--object-format"}),
+    "add": frozenset({"--chmod"}),
+    "mv": frozenset({"--pathspec-from-file"}),
+    "commit": frozenset({"-m", "--message", "--author", "--date",
+                         "--cleanup", "--trailer", "-F", "--file", "-C",
+                         "--reuse-message", "-c", "--reedit-message"}),
+    "restore": frozenset({"-s", "--source", "--conflict"}),
+    "stash": frozenset({"-m", "--message"}),
+    "branch": frozenset({"-m", "--move", "-c", "--copy",
+                         "--set-upstream-to", "-u", "--set-upstream",
+                         "--contains", "--no-contains", "--merged",
+                         "--no-merged", "--points-at", "--sort",
+                         "--format", "--abbrev"}),
+    "checkout": frozenset({"-b", "--branch", "-B", "--orphan",
+                           "--conflict", "--pathspec-from-file"}),
+    "switch": frozenset({"-c", "--create", "-C", "--force-create",
+                         "--orphan"}),
+    "tag": frozenset({"-m", "--message", "-F", "--file", "-u",
+                      "--local-user", "-n", "--cleanup", "--abbrev",
+                      "--contains", "--no-contains", "--merged",
+                      "--no-merged", "--points-at", "--sort", "--format"}),
+    "reset": frozenset({"--pathspec-from-file"}),
+    "clean": frozenset({"-e", "--exclude"}),
+    "merge": frozenset({"-s", "--strategy", "-X", "--strategy-option",
+                        "-m", "--message", "-F", "--file", "--gpg-sign"}),
+    "rebase": frozenset({"--onto", "-m", "--merge", "--strategy", "-s",
+                         "--strategy-option", "-X", "--gpg-sign"}),
+    "cherry-pick": frozenset({"-s", "--strategy", "-X", "--strategy-option",
+                              "-m", "--mainline", "--gpg-sign"}),
+    "revert": frozenset({"-s", "--strategy", "-X", "--strategy-option",
+                         "-m", "--mainline", "--gpg-sign"}),
+    "am": frozenset({"--whitespace", "--gpg-sign"}),
+}
+
 
 def _validate_git_argv(argv: tuple[str, ...]) -> str | None:
     """Validate a git argv against the strict safe allowlist.
@@ -391,7 +483,14 @@ def _validate_git_argv(argv: tuple[str, ...]) -> str | None:
     * options after the subcommand that are not in the per-subcommand
       allowlist (this catches ``-c`` after a subcommand too, plus any option
       that could enable a pager/external helper);
-    * explicit URL / ``git@`` / ``ssh://`` arguments (network targets).
+    * ``git config`` keys outside the safe local identity set
+      (``user.name``/``user.email``) -- ``diff.external``, ``core.pager``/
+      ``core.editor``, ``credential.helper``, ``core.hooksPath``, ``alias.*``,
+      ``core.sshCommand``, etc. are rejected to prevent external-helper,
+      hook, alias, pager, and editor escapes;
+    * path operands/option values that escape the sandbox root via ``..``,
+      absolute-outside-root paths, and host credential/config path references
+      (confined by :func:`_confine_git_path_args`, the shared path chokepoint).
 
     This is the single chokepoint used by both the in-process and bwrap
     backends, so the two cannot drift.
@@ -457,7 +556,157 @@ def _validate_git_argv(argv: tuple[str, ...]) -> str | None:
                 f"git option {arg!r} is not in the allowlist for "
                 f"subcommand {sub!r}"
             )
+    # C07 review: ``git config`` is constrained to the two safe local
+    # identity keys (``user.name``/``user.email``).  Any other config key is
+    # rejected here so a sandboxed action cannot arm a follow-up git run with
+    # ``diff.external``, ``core.pager``/``core.editor``, ``credential.helper``,
+    # ``core.hooksPath``, ``alias.*``, ``core.sshCommand``, or any other
+    # external-helper/pager/editor/hook/alias driver.  ``--global``/``--system``
+    # are already excluded from the config option allowlist, so only the local
+    # repo config can be touched.
+    if sub == "config":
+        key = _git_config_key_positional(rest)
+        if key is not None and key not in _SAFE_GIT_CONFIG_KEYS:
+            return (
+                f"git config key {key!r} is not in the sandbox safe-key "
+                "allowlist (allowed: user.name, user.email); dangerous "
+                "config keys (diff.external, core.pager/editor, "
+                "credential.helper, core.hooksPath, alias.*, ...) are "
+                "rejected to prevent external-helper/hook/alias/pager escapes"
+            )
     return None
+
+
+def _git_config_key_positional(rest: tuple[str, ...]) -> str | None:
+    """Return the config key positional from a ``git config`` argv tail.
+
+    Walks the post-subcommand args, skipping options and the value consumed by
+    value-taking options (``--file``/``-f``/``--default``/``--type``).  The
+    first remaining positional is the config key for get/set/add/unset forms.
+    Returns ``None`` for forms with no key positional (e.g. ``--list``).
+    """
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg.startswith("-"):
+            stem = arg.split("=", 1)[0]
+            # ``--option=value`` form consumes no following slot.
+            if "=" in arg:
+                i += 1
+                continue
+            if stem in _GIT_CONFIG_VALUE_OPTIONS:
+                i += 2  # skip option and its value
+            else:
+                i += 1
+            continue
+        return arg
+    return None
+
+
+def _confine_git_path_args(
+    root: Path, cwd: str, sub: str, rest: Sequence[str]
+) -> None:
+    """Confine every git path operand/option value to the sandbox ``root``.
+
+    Raises :class:`BoundaryViolation` if any path-taking option value or
+    positional path operand escapes ``root`` via ``..`` components, is an
+    absolute path outside ``root``, or references a host credential/config
+    path.  This is the single path-confinement chokepoint shared by the
+    in-process and bwrap backends; it complements :func:`_validate_git_argv`
+    (which vettes options/keys) by confining the *values* that the option
+    allowlist cannot inspect.
+
+    Path-taking option values (``--file``/``-f``, ``--exclude-from``/``-X``,
+    ``--separate-git-dir``, ``--template``, ``--path``, ``--git-path``,
+    ``--pathspec-from-file``, ``-F``, ``--output``) are confined.  Other
+    value-taking options (``-m``/``--message``, ``--author``, ``--strategy``,
+    ...) consume a non-path value that is skipped via the per-subcommand
+    ``_GIT_VALUE_OPTIONS`` map so it is not mistaken for a positional path
+    (e.g. ``commit -m "../notes"`` must NOT be confined).  Positional path
+    operands are confined for every subcommand except ``config`` (whose
+    positionals are keys/values); refs and object identifiers never contain
+    ``..`` or absolute-outside-root forms, so confining them is safe.
+    """
+    root_resolved = root.resolve()
+    cwd_path = _confine_relative(root, cwd)
+    value_opts = _GIT_VALUE_OPTIONS.get(sub, frozenset())
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg.startswith("-"):
+            stem = arg.split("=", 1)[0]
+            if "=" in arg:
+                # ``--option=value`` form consumes no following slot.  Confine
+                # the inline value only for path-taking options.
+                if stem in _GIT_PATH_TAKING_OPTIONS:
+                    _confine_one_git_path(
+                        root, root_resolved, cwd_path, arg.split("=", 1)[1]
+                    )
+                i += 1
+                continue
+            if stem in _GIT_PATH_TAKING_OPTIONS:
+                # The next slot is the option's path value; confine it.
+                if i + 1 < len(rest):
+                    _confine_one_git_path(
+                        root, root_resolved, cwd_path, rest[i + 1]
+                    )
+                    i += 2
+                    continue
+            if stem in value_opts:
+                # Non-path value-taking option: skip its value without
+                # confining (it is a message/author/strategy/etc., not a path).
+                i += 2
+                continue
+            i += 1
+            continue
+        # Positional operand: confine as a path for every subcommand except
+        # ``config`` (keys/values are not paths).
+        if sub != "config":
+            _confine_one_git_path(root, root_resolved, cwd_path, arg)
+        i += 1
+
+
+def _confine_one_git_path(
+    root: Path, root_resolved: Path, cwd_path: Path, target: str
+) -> None:
+    """Confine a single git path operand to ``root``.
+
+    Rejects host credential/config paths, absolute paths outside ``root``,
+    and relative paths that escape ``root`` via ``..`` components.  In-sandbox
+    absolute paths and in-sandbox ``..`` traversals (e.g. ``../sibling/x``
+    from a subdirectory that stays under ``root``) are permitted.
+    """
+    if not target:
+        return
+    # Host credential/config path references (``~/.gitconfig``, ``.ssh``, ...).
+    for cred in _HOST_CREDENTIAL_PATHS:
+        if (
+            target == cred
+            or target.endswith("/" + cred)
+            or target == "~/" + cred
+            or target.startswith("~/" + cred + "/")
+            or target.startswith(cred + "/")
+        ):
+            raise BoundaryViolation(
+                f"git path operand {target!r} references a host credential "
+                f"path {cred!r}; credential access is not allowed"
+            )
+    p = Path(target)
+    if p.is_absolute():
+        try:
+            p.resolve().relative_to(root_resolved)
+        except ValueError:
+            raise BoundaryViolation(
+                f"git path operand {target!r} is an absolute path outside "
+                "the sandbox root"
+            ) from None
+        return
+    # Relative operand: resolve against the confined cwd and reject ``..``
+    # escapes beyond ``root``.  ``_confine_lexical`` normalizes ``..`` against
+    # ``root`` and raises on escape, so in-sandbox ``../sibling`` traversals
+    # are allowed while ``../host.cfg`` / ``../../etc`` are rejected.
+    candidate = cwd_path / target
+    _confine_lexical(root, candidate)
 
 
 # ---------------------------------------------------------------------------
@@ -1065,8 +1314,13 @@ class InProcessSandboxDispatcher:
             config=self.config,
             overrides=env_overrides,
         )
-        # C07.3: ensure no host credential/config paths leak via args.
-        self._reject_credential_path_args(rest, sandbox.root)
+        # C07 review: confine every git path operand/option value to the
+        # sandbox root.  This catches ``..`` escapes (``config --file
+        # ../host.cfg``, ``diff --no-index ../outside``, ``init ../escape``),
+        # absolute paths outside the root, and host credential/config path
+        # references -- complementing the option/key allowlist in
+        # ``_validate_git_argv`` which cannot inspect option *values*.
+        _confine_git_path_args(sandbox.root, cwd, sub, rest)
 
         timeout_s = max(1, timeout_ms / 1000.0)
         try:
@@ -1187,36 +1441,6 @@ class InProcessSandboxDispatcher:
         return 0, "\n".join(entries) + ("\n" if entries else ""), ""
 
     # --- helpers ------------------------------------------------------------
-
-    def _reject_credential_path_args(self, args: Sequence[str], root: Path) -> None:
-        """Reject explicit references to host credential paths in git args."""
-        root_resolved = root.resolve()
-        for arg in args:
-            if arg.startswith("-"):
-                continue
-            # Reject well-known host credential file references.
-            for cred in _HOST_CREDENTIAL_PATHS:
-                if (
-                    arg == cred
-                    or arg.endswith("/" + cred)
-                    or arg == "~/" + cred
-                    or arg.startswith("~/" + cred + "/")
-                    or arg.startswith(cred + "/")
-                ):
-                    raise BoundaryViolation(
-                        f"git argument {arg!r} references a host credential "
-                        f"path {cred!r}; credential access is not allowed"
-                    )
-            # Reject absolute paths outside the sandbox.
-            p = Path(arg)
-            if p.is_absolute():
-                try:
-                    p.resolve().relative_to(root_resolved)
-                except ValueError:
-                    raise BoundaryViolation(
-                        f"git argument {arg!r} is an absolute path outside "
-                        "the sandbox root"
-                    ) from None
 
     def _surviving_env(self, overrides: Mapping[str, str]) -> dict[str, str]:
         """Return only the allowlisted, non-credential overrides that survive."""
@@ -1387,32 +1611,42 @@ class BwrapSandboxDispatcher:
         sub = argv[0]
         rest = argv[1:]
 
-        cwd_path = _confine_relative(sandbox.root, cwd)
-        _check_symlink_escape(sandbox.root, cwd_path)
-        env = sanitize_env(
-            os.environ, sandbox_root=sandbox.root, config=self.config,
-            overrides=env_overrides,
-        )
-        self._inner._reject_credential_path_args(rest, sandbox.root)
-
-        timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
-        timeout_s = max(1, timeout_ms / 1000.0)
-        bwrap_argv = [
-            "bwrap",
-            "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/lib", "/lib",
-            "--ro-bind", "/lib64", "/lib64",
-            "--ro-bind", "/bin", "/bin",
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--tmpfs", "/tmp",
-            "--bind", str(sandbox.root.resolve()), str(sandbox.root.resolve()),
-            "--unshare-all",
-            "--die-with-parent",
-            "--new-session",
-            "git", sub, *rest,
-        ]
+        # C07 review: the confinement steps below (cwd confinement, symlink
+        # escape check, and the path-operand confinement) raise
+        # ``BoundaryViolation`` on escape attempts.  The in-process backend
+        # catches these in its ``dispatch`` wrapper; the bwrap backend MUST
+        # do the same so a boundary violation is recorded as a transcript row
+        # instead of propagating out of ``dispatch`` and crashing the runner.
         try:
+            cwd_path = _confine_relative(sandbox.root, cwd)
+            _check_symlink_escape(sandbox.root, cwd_path)
+            env = sanitize_env(
+                os.environ, sandbox_root=sandbox.root, config=self.config,
+                overrides=env_overrides,
+            )
+            # C07 review: confine every git path operand/option value to the
+            # sandbox root (``..`` escapes, absolute-outside-root, host
+            # credential/config paths).  Shared chokepoint with the in-process
+            # backend so the two cannot drift on path confinement.
+            _confine_git_path_args(sandbox.root, cwd, sub, rest)
+
+            timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
+            timeout_s = max(1, timeout_ms / 1000.0)
+            bwrap_argv = [
+                "bwrap",
+                "--ro-bind", "/usr", "/usr",
+                "--ro-bind", "/lib", "/lib",
+                "--ro-bind", "/lib64", "/lib64",
+                "--ro-bind", "/bin", "/bin",
+                "--proc", "/proc",
+                "--dev", "/dev",
+                "--tmpfs", "/tmp",
+                "--bind", str(sandbox.root.resolve()), str(sandbox.root.resolve()),
+                "--unshare-all",
+                "--die-with-parent",
+                "--new-session",
+                "git", sub, *rest,
+            ]
             proc = subprocess.run(
                 bwrap_argv,
                 cwd=cwd_path,
@@ -1421,6 +1655,11 @@ class BwrapSandboxDispatcher:
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
+            )
+        except BoundaryViolation as exc:
+            return self._inner._violation_row(
+                action, cwd, argv, env_overrides,
+                _ViolationRecord(str(exc)), start,
             )
         except subprocess.TimeoutExpired:
             return self._inner._timeout_row(action, cwd, argv, env_overrides, start)
