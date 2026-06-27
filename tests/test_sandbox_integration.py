@@ -498,6 +498,10 @@ def test_checked_in_sandbox_fixture_runs_with_real_verifier(tmp_path: Path) -> N
     # pollute the checked-in fixture tree.
     local = tmp_path / "fixture-copy"
     shutil.copytree(fixture, local)
+    # The checked-in fixture ships ordinary files only (no nested .git, which
+    # would be an embedded git repository/submodule). Initialize the git repo
+    # at runtime so the sandboxed `git commit` script has a repo to act on.
+    _git_init(local / "fixtures" / "repo")
     output = tmp_path / "record.json"
     result = R.run_benchmark(
         local,
