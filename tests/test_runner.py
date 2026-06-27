@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import pytest
 import yaml
-
 from ai_bench import cli
 from ai_bench import runner as R
+from ai_bench import types as T
 
 
 def test_stub_text_run_writes_schema_valid_record_and_failed_verdict_is_data(tmp_path: Path) -> None:
@@ -228,6 +229,375 @@ def test_run_record_write_failure_is_command_failure(tmp_path: Path) -> None:
             output=parent_file / "record.json",
             predictions_file=_make_predictions_file(tmp_path),
         )
+
+
+def test_prompt_template_path_loaded_relative_to_benchmark_dir(tmp_path: Path) -> None:
+    bdir = tmp_path / "tmpl-benchmark"
+    cases = bdir / "cases"
+    cases.mkdir(parents=True)
+    (bdir / "prompts").mkdir(parents=True)
+    (bdir / "prompts" / "case.txt").write_text("Q: {input} [id={case_id}]", encoding="utf-8")
+    _write_yaml(
+        bdir / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "tmpl-c05",
+            "name": "Template C05",
+            "description": "Path template fixture.",
+            "domain": "labels",
+            "task_type": "text",
+            "metric": {"verifier": "exact_match", "params": {"case_sensitive": True}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["text"],
+            "status": "experimental",
+            "prompt_template": {"version": "0.1.0", "path": "prompts/case.txt"},
+            "sampling": {"temperature": 0.0},
+        },
+    )
+    _write_yaml(cases / "case-1.yaml", _text_case("case-1", "First", "Q: First [id=case-1]", []))
+
+    result = R.run_benchmark(
+        bdir,
+        output=tmp_path / "tmpl-record.json",
+        model="stub",
+        now=_fixed_clock(),
+    )
+
+    assert result.record["prompt"]["path"] == "prompts/case.txt"
+    assert result.record["prompt"]["rendered"] == "Q: First [id=case-1]"
+    assert result.record["cases"][0]["observed"].startswith("stub:0:")
+
+
+def test_prompt_template_path_escape_and_missing_are_command_failures(tmp_path: Path) -> None:
+    base = _make_text_benchmark(tmp_path)
+    # Rewrite manifest to use an escaping path template.
+    _write_yaml(
+        base / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "text-c05",
+            "name": "Text C05",
+            "description": "Text runner fixture.",
+            "domain": "labels",
+            "task_type": "text",
+            "metric": {"verifier": "exact_match", "params": {"case_sensitive": True}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["text"],
+            "status": "experimental",
+            "prompt_template": {"version": "0.1.0", "path": "../escape.txt"},
+            "sampling": {"temperature": 0.0},
+        },
+    )
+    with pytest.raises(R.RunnerError, match="escapes benchmark directory"):
+        R.run_benchmark(base, output=tmp_path / "escape.json", model="stub", now=_fixed_clock())
+
+    # Missing path template file.
+    _write_yaml(
+        base / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "text-c05",
+            "name": "Text C05",
+            "description": "Text runner fixture.",
+            "domain": "labels",
+            "task_type": "text",
+            "metric": {"verifier": "exact_match", "params": {"case_sensitive": True}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["text"],
+            "status": "experimental",
+            "prompt_template": {"version": "0.1.0", "path": "prompts/missing.txt"},
+            "sampling": {"temperature": 0.0},
+        },
+    )
+    with pytest.raises(R.RunnerError, match="not found"):
+        R.run_benchmark(base, output=tmp_path / "missing.json", model="stub", now=_fixed_clock())
+
+
+def test_materialize_replay_state_normalizes_cwd_and_ignores_failed_writes() -> None:
+    transcript = [
+        T.ToolAction(
+            command="file.write", argv=("README.md", "x"), cwd=".",
+            exit_code=0, wall_clock_ms=1,
+        ),
+        # Written from a subdirectory cwd -> normalized to sub/dir/notes.md.
+        T.ToolAction(
+            command="file.write", argv=("notes.md", "y"), cwd="sub/dir",
+            exit_code=0, wall_clock_ms=1,
+        ),
+        # Non-zero exit -> ignored.
+        T.ToolAction(
+            command="file.write", argv=("failed.txt", "z"), cwd=".",
+            exit_code=2, wall_clock_ms=1,
+        ),
+        # Timeout -> ignored.
+        T.ToolAction(
+            command="file.write", argv=("timedout.txt", "z"), cwd=".",
+            exit_code=None, wall_clock_ms=1000, timeout=True,
+        ),
+        # Boundary violation -> ignored.
+        T.ToolAction(
+            command="file.write", argv=("violated.txt", "z"), cwd=".",
+            exit_code=0, wall_clock_ms=1, sandbox_boundary_violation=True,
+        ),
+        # Escaping path -> ignored.
+        T.ToolAction(
+            command="file.write", argv=("../escape.txt", "z"), cwd=".",
+            exit_code=0, wall_clock_ms=1,
+        ),
+        # Absolute path -> ignored.
+        T.ToolAction(
+            command="file.write", argv=("/etc/passwd", "z"), cwd=".",
+            exit_code=0, wall_clock_ms=1,
+        ),
+    ]
+    state = R._materialize_replay_state(transcript)
+    assert state.file_tree == ("README.md", "sub/dir/notes.md")
+
+
+def test_fixture_with_symlink_is_rejected(tmp_path: Path) -> None:
+    bdir = tmp_path / "symlink-benchmark"
+    cases = bdir / "cases"
+    fixtures = bdir / "fixtures" / "repo"
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host-secret\n", encoding="utf-8")
+    cases.mkdir(parents=True)
+    fixtures.mkdir(parents=True)
+    (fixtures / "real.txt").write_text("real\n", encoding="utf-8")
+    os.symlink(secret, fixtures / "link.txt")
+    _write_yaml(
+        bdir / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "symlink-c05",
+            "name": "Symlink C05",
+            "description": "Symlink fixture fixture.",
+            "domain": "tool-use",
+            "task_type": "tool-task",
+            "metric": {"verifier": "state_check", "params": {"c05_stub_state_check": "pass"}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["tool"],
+            "status": "experimental",
+        },
+    )
+    _write_yaml(
+        cases / "case-1.yaml",
+        {
+            "schema_version": "1",
+            "id": "case-1",
+            "input": {"prompt": "x", "fixture": "fixtures/repo"},
+            "expected": "state-check-stub",
+            "tags": ["smoke"],
+            "difficulty": "easy",
+            "provenance": {"source": "original", "license": "MIT"},
+            "state_check": {"git": {"status_clean": True}},
+        },
+    )
+
+    with pytest.raises(R.RunnerError, match="symlink"):
+        R.run_benchmark(
+            bdir,
+            output=tmp_path / "symlink-record.json",
+            model="stub",
+            now=_fixed_clock(),
+        )
+
+
+def test_per_case_verifier_override_provenance_recorded_with_name_and_empty_params(
+    tmp_path: Path,
+) -> None:
+    bdir = tmp_path / "override-benchmark"
+    cases = bdir / "cases"
+    cases.mkdir(parents=True)
+    _write_yaml(
+        bdir / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "override-c05",
+            "name": "Override C05",
+            "description": "Verifier override fixture.",
+            "domain": "labels",
+            "task_type": "text",
+            "metric": {"verifier": "exact_match", "params": {"case_sensitive": True}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["text"],
+            "status": "experimental",
+            "prompt_template": {"version": "0.1.0", "template": "{input}"},
+            "sampling": {"temperature": 0.0},
+        },
+    )
+    # case-1 overrides the verifier to contains_any with empty params.
+    _write_yaml(
+        cases / "case-1.yaml",
+        {
+            "schema_version": "1",
+            "id": "case-1",
+            "input": "alpha beta",
+            "expected": "alpha",
+            "tags": [],
+            "difficulty": "easy",
+            "provenance": {"source": "original", "license": "MIT"},
+            "verifier": {"verifier": "contains_any", "params": {"needles": ["alpha"]}},
+        },
+    )
+    # case-2 overrides the verifier to regex_match with NO params (empty).
+    _write_yaml(
+        cases / "case-2.yaml",
+        {
+            "schema_version": "1",
+            "id": "case-2",
+            "input": "gamma",
+            "expected": "gamma",
+            "tags": [],
+            "difficulty": "easy",
+            "provenance": {"source": "original", "license": "MIT"},
+            "verifier": {"verifier": "regex_match", "params": {}},
+        },
+    )
+
+    result = R.run_benchmark(
+        bdir,
+        output=tmp_path / "override-record.json",
+        model="stub",
+        now=_fixed_clock(),
+    )
+
+    overrides = result.record["metric_params"]["_case_overrides"]
+    assert overrides["case-1"] == {"verifier": "contains_any", "params": {"needles": ["alpha"]}}
+    assert overrides["case-2"] == {"verifier": "regex_match", "params": {}}
+
+
+def test_malformed_benchmark_load_is_command_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bdir = tmp_path / "malformed"
+    cases = bdir / "cases"
+    cases.mkdir(parents=True)
+    _write_yaml(
+        bdir / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "malformed-c05",
+            "name": "Malformed C05",
+            "description": "Missing required metric.",
+            "domain": "labels",
+            "task_type": "text",
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+        },
+    )
+    _write_yaml(cases / "case-1.yaml", _text_case("case-1", "First", "alpha", []))
+
+    bad = cli.main(["run", str(bdir), "--output", str(tmp_path / "malformed.json")])
+    captured = capsys.readouterr()
+
+    assert bad == 1
+    assert "run failed" in captured.err
+
+
+def test_text_adapter_runtime_failure_is_command_failure(tmp_path: Path) -> None:
+    benchmark = _make_text_benchmark(tmp_path)
+
+    class BoomAdapter:
+        model_id = "boom"
+        provider = "ai-bench"
+        adapter_kind = "text"
+
+        def generate(self, prompt: str, *, params: Mapping[str, Any], seed: Any) -> str:
+            raise RuntimeError("adapter exploded")
+
+    with pytest.raises(R.RunnerError, match="text adapter failed"):
+        R.run_benchmark(
+            benchmark,
+            output=tmp_path / "boom.json",
+            text_adapter=BoomAdapter(),  # type: ignore[arg-type]
+            now=_fixed_clock(),
+        )
+
+
+def test_agent_dispatcher_runtime_failure_is_command_failure(tmp_path: Path) -> None:
+    benchmark = _make_tool_benchmark(tmp_path, stub_result="pass")
+
+    class BoomDispatcher:
+        backend_id = "boom-dispatcher"
+
+        def dispatch(self, action: Any, *, sandbox: Any) -> Any:
+            raise RuntimeError("dispatcher exploded")
+
+        def snapshot(self, *, sandbox: Any, transcript: Sequence[Any]) -> Any:
+            raise RuntimeError("snapshot exploded")
+
+    with pytest.raises(R.RunnerError, match="agent/dispatcher failed"):
+        R.run_benchmark(
+            benchmark,
+            output=tmp_path / "boom-dispatch.json",
+            model="stub",
+            dispatcher=BoomDispatcher(),  # type: ignore[arg-type]
+            now=_fixed_clock(),
+        )
+
+
+def test_internal_mismatch_raises_command_failure(tmp_path: Path) -> None:
+    benchmark = _make_text_benchmark(tmp_path)
+    # Force an internal mismatch by monkeypatching _score_cases to return the
+    # wrong number of verdicts, exercising the runner's internal guard.
+    original = R._score_cases
+
+    def short(cases: Any, observed_by_id: Any, *, manifest: Any) -> Any:
+        verdicts, aggregate = original(cases, observed_by_id, manifest=manifest)
+        return verdicts[:-1], aggregate
+
+    R._score_cases = short  # type: ignore[assignment]
+    try:
+        with pytest.raises(R.RunnerError, match="internal runner error: evaluated"):
+            R.run_benchmark(
+                benchmark,
+                output=tmp_path / "mismatch.json",
+                model="stub",
+                now=_fixed_clock(),
+            )
+    finally:
+        R._score_cases = original  # type: ignore[assignment]
+
+
+def test_run_record_schema_validation_failure_is_command_failure(tmp_path: Path) -> None:
+    benchmark = _make_text_benchmark(tmp_path)
+    # Force a schema-invalid run-record by monkeypatching the verifier dict
+    # builder to emit an invalid verifier name.
+    original = R._run_verifier
+
+    def bad_verifier(manifest: Any) -> Any:
+        v = original(manifest)
+        return T.RunVerifier(name="not-a-real-verifier", version=v.version, judge_config=v.judge_config)
+
+    R._run_verifier = bad_verifier  # type: ignore[assignment]
+    try:
+        with pytest.raises(R.RunnerError, match="run-record failed schema validation|run failed"):
+            R.run_benchmark(
+                benchmark,
+                output=tmp_path / "bad-schema.json",
+                model="stub",
+                now=_fixed_clock(),
+            )
+    finally:
+        R._run_verifier = original  # type: ignore[assignment]
 
 
 def _make_text_benchmark(tmp_path: Path) -> Path:

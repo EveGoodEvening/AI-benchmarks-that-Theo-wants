@@ -9,6 +9,7 @@ verifier, or failure-store persistence.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 from contextlib import contextmanager
@@ -123,6 +124,7 @@ def run_benchmark(
         if replay is not None:
             raise RunnerError("--replay is only valid for tool-task benchmarks")
         record_cases, aggregate, model_ref, sandbox_backend, rendered_prompts = _run_text_cases(
+            manifest_handle,
             manifest,
             cases,
             model=model,
@@ -236,6 +238,7 @@ def _load_selected_cases(manifest: L.Manifest, tag: str | None) -> list[tuple[Pa
 
 
 def _run_text_cases(
+    manifest_handle: L.Manifest,
     manifest: T.BenchmarkManifest,
     cases: Sequence[T.CaseDefinition],
     *,
@@ -245,7 +248,7 @@ def _run_text_cases(
     predictions_file: Path | None,
     text_adapter: M.TextModelAdapter | None,
 ) -> tuple[list[T.CaseResult], T.AggregateScore, T.ModelRef, str | None, list[str]]:
-    prompts = [_render_case_prompt(manifest, case) for case in cases]
+    prompts = [_render_case_prompt(manifest, case, benchmark_dir=manifest_handle.dir) for case in cases]
     if predictions is not None:
         observed_by_id = _load_predictions_dir(predictions, cases)
         model_ref = T.ModelRef(id=f"file:{predictions}", adapter="file")
@@ -305,7 +308,7 @@ def _run_tool_cases(
     state_check_verifier: S.StateCheckVerifier | None,
 ) -> tuple[list[T.CaseResult], T.AggregateScore, T.ModelRef, str | None, list[str]]:
     del seed
-    prompts = [_render_case_prompt(manifest, case) for case in cases]
+    prompts = [_render_case_prompt(manifest, case, benchmark_dir=manifest_handle.dir) for case in cases]
     if replay is not None:
         replayed = _load_replay_dir(replay, cases)
         observed_by_id = {cid: state for cid, (_, state) in replayed.items()}
@@ -543,10 +546,27 @@ def _split_replay_json(
 
 
 def _materialize_replay_state(transcript: Sequence[T.ToolAction]) -> T.RepoState:
-    file_tree = []
+    """Materialize a best-effort final repo state from a replay transcript.
+
+    Only successful ``file.write`` actions contribute to the file tree: writes
+    with a non-zero/unknown exit code, a timeout, or a sandbox boundary
+    violation are ignored since they may not have produced a file.  The written
+    path (``argv[0]``) is normalized against the action's relative ``cwd`` so a
+    write executed from a subdirectory is recorded at its in-sandbox location.
+    Paths that cannot be normalized to a clean relative in-sandbox path are
+    skipped rather than recorded with a misleading absolute or escaping path.
+    """
+    file_tree: list[str] = []
     for action in transcript:
-        if action.command == "file.write" and action.argv:
-            file_tree.append(str(action.argv[0]))
+        if action.command != "file.write" or not action.argv:
+            continue
+        if action.exit_code not in (0, None):
+            continue
+        if action.timeout or action.sandbox_boundary_violation:
+            continue
+        normalized = _normalize_sandbox_path(str(action.argv[0]), cwd=action.cwd)
+        if normalized is not None:
+            file_tree.append(normalized)
     return T.RepoState(
         file_tree=tuple(sorted(set(file_tree))),
         git_status="",
@@ -554,6 +574,38 @@ def _materialize_replay_state(transcript: Sequence[T.ToolAction]) -> T.RepoState
         commits=({"sha": "c05replay", "subject": "C05 replay snapshot"},),
         diff="",
     )
+
+
+def _normalize_sandbox_path(path: str, *, cwd: str) -> str | None:
+    """Normalize a tool-action path against its relative cwd into an in-sandbox path.
+
+    Returns a POSIX-style relative path with no ``..`` segments that escape the
+    sandbox root, or ``None`` if the path is absolute or escapes the sandbox.
+    The sandbox root is implicit (the dispatcher executes inside it), so an
+    absolute path is treated as untrustworthy and rejected rather than stripped.
+    """
+    if not path:
+        return None
+    p = Path(path)
+    if p.is_absolute():
+        return None
+    base = Path(cwd) if cwd else Path(".")
+    if base.is_absolute():
+        return None
+    joined = base / path
+    parts: list[str] = []
+    for part in joined.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+    if not parts:
+        return None
+    return "/".join(parts)
 
 
 @contextmanager
@@ -582,13 +634,15 @@ def _copy_fixture_if_present(manifest: L.Manifest, case: T.CaseDefinition, root:
     fixture = Path(case.input.fixture)
     if fixture.is_absolute():
         raise RunnerError(f"case {case.id!r} fixture path must be relative")
-    source = (manifest.dir / fixture).resolve()
+    base = manifest.dir.resolve()
+    source = (base / fixture).resolve()
     try:
-        source.relative_to(manifest.dir.resolve())
+        source.relative_to(base)
     except ValueError:
         raise RunnerError(f"case {case.id!r} fixture path escapes benchmark directory")
     if not source.exists():
         raise RunnerError(f"case {case.id!r} fixture not found: {source}")
+    _reject_unsafe_fixture(source, base=base, case_id=case.id)
     if source.is_dir():
         shutil.copytree(source, root, dirs_exist_ok=True)
     else:
@@ -596,6 +650,46 @@ def _copy_fixture_if_present(manifest: L.Manifest, case: T.CaseDefinition, root:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     return source
+
+
+def _reject_unsafe_fixture(source: Path, *, base: Path, case_id: str) -> None:
+    """Reject fixtures that contain symlinks or resolved paths escaping ``base``.
+
+    ``shutil.copytree`` follows nested symlinks, which can copy host data
+    outside the benchmark directory into the sandbox.  Walk the fixture tree
+    first and fail the run if any entry is a symlink or resolves outside the
+    benchmark directory.  The top-level ``source`` is checked too.
+    """
+    if source.is_symlink():
+        raise RunnerError(
+            f"case {case_id!r} fixture {source} is a symlink; symlinks are not allowed"
+        )
+    try:
+        source.resolve().relative_to(base)
+    except ValueError:
+        raise RunnerError(
+            f"case {case_id!r} fixture {source} resolves outside the benchmark directory"
+        ) from None
+    if not source.is_dir():
+        return
+    for entry in _walk_fixture(source):
+        if entry.is_symlink():
+            raise RunnerError(
+                f"case {case_id!r} fixture contains symlink {entry}; symlinks are not allowed"
+            )
+        try:
+            entry.resolve().relative_to(base)
+        except ValueError:
+            raise RunnerError(
+                f"case {case_id!r} fixture entry {entry} resolves outside the benchmark directory"
+            ) from None
+
+
+def _walk_fixture(root: Path) -> Iterable[Path]:
+    """Yield every path beneath ``root`` (files, dirs, and their contents)."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            yield Path(dirpath, name)
 
 
 def _state_check_impl(
@@ -771,20 +865,76 @@ def _state_check_from_mapping(data: Any) -> T.StateCheckSpec | None:
     )
 
 
-def _render_case_prompt(manifest: T.BenchmarkManifest, case: T.CaseDefinition) -> str:
+def _render_case_prompt(
+    manifest: T.BenchmarkManifest,
+    case: T.CaseDefinition,
+    *,
+    benchmark_dir: Path | None = None,
+) -> str:
     if isinstance(case.input, str):
         input_text = case.input
     elif case.input.prompt is not None:
         input_text = case.input.prompt
     else:
         input_text = L.canonical_json({"fixture": case.input.fixture, **dict(case.input.extra)})
-    tmpl = manifest.prompt_template.template if manifest.prompt_template is not None else None
+    tmpl = _resolve_prompt_template(manifest, benchmark_dir=benchmark_dir, case_id=case.id)
     if tmpl is None:
         return input_text
     try:
         return tmpl.format(input=input_text, case_id=case.id)
     except Exception as exc:
         raise RunnerError(f"could not render prompt for case {case.id!r}: {exc}") from exc
+
+
+def _resolve_prompt_template(
+    manifest: T.BenchmarkManifest,
+    *,
+    benchmark_dir: Path | None,
+    case_id: str,
+) -> str | None:
+    """Resolve the prompt template text from an inline string or a file path.
+
+    ``prompt_template.template`` (inline) takes precedence when present.  When
+    only ``prompt_template.path`` is set, the file is loaded relative to the
+    benchmark directory and confined to it.  A path-only template without a
+    benchmark directory, an absolute/escaping path, or a missing/unreadable
+    file is a runner infrastructure failure.
+    """
+    pt = manifest.prompt_template
+    if pt is None:
+        return None
+    if pt.template is not None:
+        return pt.template
+    if pt.path is None:
+        return None
+    if benchmark_dir is None:
+        raise RunnerError(
+            f"prompt_template.path set for case {case_id!r} but no benchmark "
+            "directory is available to resolve it"
+        )
+    path = Path(pt.path)
+    if path.is_absolute():
+        raise RunnerError(
+            f"prompt_template.path for case {case_id!r} must be relative: {pt.path!r}"
+        )
+    base = Path(benchmark_dir).resolve()
+    resolved = (base / path).resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        raise RunnerError(
+            f"prompt_template.path for case {case_id!r} escapes benchmark directory: {pt.path!r}"
+        ) from None
+    if not resolved.is_file():
+        raise RunnerError(
+            f"prompt_template.path for case {case_id!r} not found: {resolved}"
+        )
+    try:
+        return resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RunnerError(
+            f"could not read prompt_template.path for case {case_id!r}: {exc}"
+        ) from exc
 
 
 def _run_prompt(manifest: T.BenchmarkManifest, rendered_prompts: Sequence[str]) -> T.RunPrompt:
@@ -805,11 +955,14 @@ def _run_prompt(manifest: T.BenchmarkManifest, rendered_prompts: Sequence[str]) 
 
 def _metric_params(manifest: T.BenchmarkManifest, cases: Sequence[T.CaseDefinition]) -> dict[str, Any]:
     out = dict(manifest.metric.params)
-    overrides = {
-        case.id: dict(case.verifier.params)
-        for case in cases
-        if case.verifier is not None and case.verifier.params
-    }
+    overrides: dict[str, Any] = {}
+    for case in cases:
+        if case.verifier is None:
+            continue
+        overrides[case.id] = {
+            "verifier": case.verifier.verifier,
+            "params": dict(case.verifier.params),
+        }
     if overrides:
         out["_case_overrides"] = overrides
     return out
