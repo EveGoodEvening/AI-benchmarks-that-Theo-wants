@@ -1,0 +1,19 @@
+# Sample scoring fixture case for chunk C04.
+# These fixtures are consumed by tests/test_scoring.py to exercise the
+# built-in verifiers against representative case shapes. They are NOT real
+# benchmark cases and are not discovered by the loader.
+schema_version: "1"
+id: scoring-sample-exact
+input: "Name the animal that says meow."
+expected: "cat"
+tags:
+  - smoke
+difficulty: easy
+provenance:
+  source: original
+  license: MIT
+verifier:
+  verifier: exact_match
+  params:
+    case_sensitive: false
+    trim: true

@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: C01, C02, and C03 implemented and verified; C04-C13 not started.
+Implementation state: C01, C02, C03, and C04 implemented and verified; C05-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -95,7 +95,7 @@ A future session may run chunks in parallel only when they do not touch the same
   - [x] Run and record verification commands.
 - Verification evidence (C03): Orchestrator verification passed. `uv run pytest tests/test_loader.py tests/test_validate_cli.py -q` -> passed. `uv run ai-bench validate tests/fixtures/loader/valid_benchmark` -> exited 0 with `OK` and `cases=2 smoke=1`. `uv run ai-bench validate tests/fixtures/loader/malformed_manifest` -> exited 1 with actionable schema errors (expected negative). `uv run ai-bench validate` (no-arg, repo root) -> exited 0 with zero registered benchmarks message. `uv run pytest -q` -> passed (full suite, no regressions). Coverage spans safe YAML/JSON loading, manifest/case schema validation including benchmark `tags`/`status` and the reserved `smoke` tag, benchmark discovery excluding `benchmarks/_template/**` with unique-id checks, safe case glob resolution with tag-based subset selection, deterministic canonicalization, both `ai-bench validate <benchmark>` and no-argument `ai-bench validate` CLI forms, and validate CLI tests for both forms (valid fixture passes, malformed manifest fails, no-arg validates all fixtures). Release behavior separated from negative fixture testing: repo-root no-arg `ai-bench validate` validates only real registered benchmarks and passes on a healthy repo (zero-registered message on a tree with no real benchmarks); invalid-fixture failure tested via explicit fixture-root command, not via the release validate-all against a tree containing malformed fixtures. All nine C03 tasks are satisfied and verified; C03 remains checked. C04 code exists but is left unchecked for a separate tracker update; C05+ remain unchecked.
 
-### [ ] C04 — Scoring/verifier engine
+### [x] C04 — Scoring/verifier engine
 
 - Conventional Commit candidate: `feat(scoring): add built-in deterministic benchmark verifiers`
 - Owned files/scope: `src/ai_bench/scoring.py`, `tests/fixtures/scoring/**`, `tests/test_scoring.py`.
@@ -104,13 +104,15 @@ A future session may run chunks in parallel only when they do not touch the same
 - Verification: `uv run pytest tests/test_scoring.py -q`.
 - Review criteria: deterministic verifier outputs; edge cases covered; LLM-judge requires pinned metadata; no arbitrary custom-code plugin in v1.
 - Tasks:
-  - [ ] Add exact-match scorer.
-  - [ ] Add contains-any scorer.
-  - [ ] Add regex-match scorer.
-  - [ ] Add set-F1 scorer with edge-case handling.
-  - [ ] Add state-check verifier interface shape.
-  - [ ] Add LLM-judge contract with deterministic test double only.
-  - [ ] Run and record verification command.
+  - [x] Add exact-match scorer.
+  - [x] Add contains-any scorer.
+  - [x] Add regex-match scorer.
+  - [x] Add set-F1 scorer with edge-case handling.
+  - [x] Add state-check verifier interface shape.
+  - [x] Add LLM-judge contract with deterministic test double only.
+  - [x] Run and record verification command.
+
+- Verification evidence (C04): Orchestrator verification passed. `uv run pytest tests/test_scoring.py -q` -> passed. `uv run pytest -q` -> passed (full suite, no regressions). Coverage spans deterministic verifiers (exact-match, contains-any, regex-match, set-F1 with edge cases), state-check verifier interface shape, and LLM-judge contract with deterministic test double only; no arbitrary custom-code plugin in v1. All seven C04 tasks are satisfied and verified; C04 checked. C01-C03 remain checked; C05+ remain unchecked.
 
 ### [ ] C05 — Runner + model/agent adapters + run-records + tool-task execution contract
 

@@ -1,0 +1,17 @@
+# Sample scoring fixture case for chunk C04: set_f1 partial overlap.
+schema_version: "1"
+id: scoring-sample-setf1
+input: "List the primary colors."
+expected: "red green blue"
+tags:
+  - smoke
+difficulty: medium
+provenance:
+  source: original
+  license: MIT
+verifier:
+  verifier: set_f1
+  params:
+    case_sensitive: false
+    delimiter: null
+    threshold: 1.0
