@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: no source implementation has started. Every implementation chunk and task below is intentionally unchecked.
+Implementation state: C01 implemented and verified; C02-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -42,7 +42,7 @@ A future session may run chunks in parallel only when they do not touch the same
 
 ## Chunk checklist
 
-### [ ] C01 — Project skeleton + toolchain
+### [x] C01 — Project skeleton + toolchain
 
 - Conventional Commit candidate: `chore: add Python project skeleton and CLI entry point`
 - Owned files/scope: `pyproject.toml`, `uv.lock`, `.gitignore`, `src/ai_bench/__init__.py`, `src/ai_bench/cli.py`, initial `tests/` package if needed.
@@ -51,10 +51,11 @@ A future session may run chunks in parallel only when they do not touch the same
 - Verification: `uv sync`; `uv run ai-bench --help`; `uv run pytest -q`.
 - Review criteria: minimal Python 3.11+ uv project; no heavy ML dependency stack; stable CLI entry point; no committed caches/build output.
 - Tasks:
-  - [ ] Create the Python/uv project files.
-  - [ ] Add the package and CLI entry point.
-  - [ ] Add minimal test layout if needed.
-  - [ ] Run and record verification commands.
+  - [x] Create the Python/uv project files.
+  - [x] Add the package and CLI entry point.
+  - [x] Add minimal test layout if needed.
+  - [x] Run and record verification commands.
+- Verification evidence (C01): `uv sync` -> Checked 13 packages; `uv run ai-bench --help` -> usage printed, `ai-bench` entry point resolves (`validate`/`run`/`failures` subcommands present, planned); `uv run pytest -q` -> 5 passed. Python 3.11+ uv project; runtime deps limited to pyyaml + jsonschema (no heavy ML stack); `ai-bench` console script stable; `.gitignore` excludes caches/build output.
 
 ### [ ] C02 — Schemas + typed contracts
 
