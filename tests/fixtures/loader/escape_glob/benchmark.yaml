@@ -1,0 +1,19 @@
+schema_version: "1"
+id: loader-escape-glob
+name: Loader escape glob benchmark
+description: A benchmark whose case_glob attempts to escape the benchmark directory.
+domain: recreation
+task_type: text
+metric:
+  verifier: exact_match
+  params:
+    case_sensitive: false
+version: "0.1.0"
+contributor:
+  name: AI-bench contributors
+  contact: https://example.org
+license: MIT
+case_glob: "../valid_benchmark/cases/*.yaml"
+tags:
+  - recreation
+status: experimental

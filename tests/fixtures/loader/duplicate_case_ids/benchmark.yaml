@@ -1,0 +1,19 @@
+schema_version: "1"
+id: loader-duplicate-cases
+name: Loader duplicate case ids
+description: A benchmark with two cases sharing the same id.
+domain: recreation
+task_type: text
+metric:
+  verifier: exact_match
+  params:
+    case_sensitive: false
+version: "0.1.0"
+contributor:
+  name: AI-bench contributors
+  contact: https://example.org
+license: MIT
+case_glob: "cases/*.yaml"
+tags:
+  - recreation
+status: experimental

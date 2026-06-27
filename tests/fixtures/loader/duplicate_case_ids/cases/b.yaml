@@ -1,0 +1,10 @@
+schema_version: "1"
+id: dup-case
+input: A narrow strip of land projecting into the sea.
+expected: peninsula
+tags:
+  - geography
+difficulty: medium
+provenance:
+  source: original
+  license: MIT

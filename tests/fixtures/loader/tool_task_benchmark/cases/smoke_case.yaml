@@ -1,0 +1,19 @@
+schema_version: "1"
+id: git-commit-smoke
+input:
+  prompt: Create a commit with message "initial".
+  fixture: fixtures/repo
+expected: null
+expected_metadata:
+  reason: preserved_failure_case
+  source_run_record: records/run-001.json
+tags:
+  - smoke
+difficulty: medium
+provenance:
+  source: original
+  license: MIT
+state_check:
+  git:
+    status_clean: true
+    head_commit_message: initial

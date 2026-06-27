@@ -1,0 +1,7 @@
+schema_version: "1"
+id: loader-malformed-manifest
+# Missing required fields: name, description, domain, task_type, metric,
+# version, contributor, license, case_glob.
+tags:
+  - recreation
+status: experimental

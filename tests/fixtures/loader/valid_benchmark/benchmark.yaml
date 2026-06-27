@@ -1,0 +1,20 @@
+schema_version: "1"
+id: loader-valid
+name: Loader valid benchmark
+description: A minimal valid benchmark used by C03 loader/validator tests.
+domain: recreation
+task_type: text
+metric:
+  verifier: exact_match
+  params:
+    case_sensitive: false
+version: "0.1.0"
+contributor:
+  name: AI-bench contributors
+  contact: https://example.org
+license: MIT
+case_glob: "cases/*.yaml"
+tags:
+  - recreation
+  - spatial-reasoning
+status: experimental

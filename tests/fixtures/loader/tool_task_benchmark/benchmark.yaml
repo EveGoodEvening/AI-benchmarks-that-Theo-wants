@@ -1,0 +1,19 @@
+schema_version: "1"
+id: loader-tool-task
+name: Loader tool-task benchmark
+description: A minimal valid tool-task benchmark exercising the state_check verifier path.
+domain: tool-use
+task_type: tool-task
+metric:
+  verifier: state_check
+  params: {}
+version: "0.1.0"
+contributor:
+  name: AI-bench contributors
+  contact: https://example.org
+license: MIT
+case_glob: "cases/*.yaml"
+tags:
+  - tool-use
+  - git
+status: experimental

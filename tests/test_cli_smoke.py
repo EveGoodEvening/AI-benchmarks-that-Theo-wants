@@ -40,11 +40,14 @@ def test_cli_version_flag_exits_zero(capsys: pytest.CaptureFixture[str]) -> None
     assert ai_bench.__version__ in out
 
 
-def test_cli_placeholder_subcommand_is_not_implemented(capsys: pytest.CaptureFixture[str]) -> None:
-    rc = cli.main(["validate"])
-    err = capsys.readouterr().err
-    assert rc != 0
-    assert "not implemented yet" in err
+def test_cli_placeholder_subcommands_are_not_implemented(capsys: pytest.CaptureFixture[str]) -> None:
+    # validate is implemented in C03; run and failures remain placeholder
+    # stubs owned by later chunks (C05 and C09).
+    for name in ("run", "failures"):
+        rc = cli.main([name])
+        err = capsys.readouterr().err
+        assert rc != 0
+        assert "not implemented yet" in err
 
 
 def test_cli_help_subprocess_runs() -> None:
