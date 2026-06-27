@@ -348,6 +348,17 @@ class TestDiscovery:
         manifests = L.discover_benchmarks(root)
         assert all(not m.id.endswith("template") for m in manifests)
 
+    def test_template_named_ancestor_does_not_hide_real_benchmarks(
+        self, tmp_path: Path
+    ) -> None:
+        # Only path components relative to benchmarks/ are considered for the
+        # _template exclusion; an unrelated ancestor named _template is legal.
+        repo_root = tmp_path / "_template" / "repo"
+        repo_root.mkdir(parents=True)
+        root = _make_repo_with_benchmarks(repo_root)
+        ids = [m.id for m in L.discover_benchmarks(root)]
+        assert ids == ["real-a", "real-b"]
+
 
 # --- Canonical serialization ------------------------------------------------
 
@@ -366,9 +377,11 @@ class TestCanonicalization:
             assert p1 == p2
             assert L.canonical_json(c1) == L.canonical_json(c2)
 
-    def test_canonical_drops_none_entries(self) -> None:
-        out = L.canonicalize({"a": 1, "b": None, "c": [1, None, 2]})
-        assert out == {"a": 1, "c": [1, None, 2]}
+    def test_canonical_preserves_none_entries(self) -> None:
+        out = L.canonicalize(
+            {"a": 1, "b": None, "c": [1, None, {"expected": None}]}
+        )
+        assert out == {"a": 1, "b": None, "c": [1, None, {"expected": None}]}
 
     def test_canonical_sorts_dict_keys(self) -> None:
         out = L.canonicalize({"b": 1, "a": 2})
@@ -387,11 +400,18 @@ class TestCanonicalization:
 
         contrib = T.Contributor(name="x")
         out = L.canonicalize(contrib)
-        assert out == {"name": "x"}
+        assert out == {"contact": None, "name": "x", "url": None}
 
     def test_canonical_json_is_sorted_and_stable(self) -> None:
         text = L.canonical_json({"b": 1, "a": {"y": 2, "x": 1}})
         assert text == json.dumps({"a": {"x": 1, "y": 2}, "b": 1}, sort_keys=True, ensure_ascii=False)
+
+    def test_canonical_json_preserves_expected_null(self) -> None:
+        text = L.canonical_json({"id": "case-1", "expected": None})
+        assert text == json.dumps(
+            {"expected": None, "id": "case-1"}, sort_keys=True, ensure_ascii=False
+        )
+        assert '"expected": null' in text
 
 
 # --- Whole-benchmark validation --------------------------------------------

@@ -183,8 +183,8 @@ def canonicalize(obj: Any) -> Any:
       * Sorts list elements ONLY when explicitly tagged as set-like via a
         ``frozenset``/``set`` input (plain lists preserve order, since case
         order and tag order are meaningful in fixtures).
-      * Drops ``None``-valued dict entries so optional fields do not create
-        spurious differences.
+      * Preserves ``None`` as JSON ``null`` so explicit fixture fields such as
+        ``expected: null`` remain semantically visible.
       * Produces a stable JSON-serializable structure.
 
     Determinism is asserted by ``tests/test_loader.py``: canonicalizing the
@@ -198,13 +198,10 @@ def _canonicalize(obj: Any) -> Any:
     if is_dataclass(obj) and not isinstance(obj, type):
         return _canonicalize(asdict(obj))
     if isinstance(obj, Mapping):
-        out: dict[str, Any] = {}
-        for key in sorted(obj.keys(), key=lambda k: str(k)):
-            value = obj[key]
-            if value is None:
-                continue
-            out[str(key)] = _canonicalize(value)
-        return out
+        return {
+            str(key): _canonicalize(obj[key])
+            for key in sorted(obj.keys(), key=lambda k: str(k))
+        }
     if isinstance(obj, (frozenset, set)):
         return sorted(_canonicalize(v) for v in obj)
     if isinstance(obj, (list, tuple)):
@@ -230,6 +227,35 @@ def _format_path(path: Sequence[str | int]) -> str:
         else:
             parts.append(f".{elem}" if parts else str(elem))
     return "".join(parts)
+
+
+def _jsonschema_error_lines(error: jsonschema.ValidationError) -> list[str]:
+    """Render a schema error plus nested context into path-qualified lines."""
+    lines = [f"{_format_path(list(error.absolute_path))}: {error.message}"]
+    nested = sorted(
+        error.context,
+        key=lambda e: (
+            tuple(str(part) for part in e.absolute_path),
+            tuple(str(part) for part in e.schema_path),
+            e.message,
+        ),
+    )
+    for child in nested:
+        for line in _jsonschema_error_lines(child):
+            if line not in lines:
+                lines.append(line)
+    return lines
+
+
+def _validation_error_detail_lines(error: ValidationError) -> list[str]:
+    """Render nested validation details without the top-level summary line."""
+    lines: list[str] = []
+    for e in error.errors:
+        if isinstance(e, jsonschema.ValidationError):
+            lines.extend(_jsonschema_error_lines(e))
+        else:
+            lines.append(str(e))
+    return lines
 
 
 def _schema_errors(
@@ -469,9 +495,8 @@ def load_cases(
         except ValidationError as exc:
             for e in exc.errors:
                 if isinstance(e, jsonschema.ValidationError):
-                    errors.append(
-                        f"{cp}: {_format_path(list(e.absolute_path))}: {e.message}"
-                    )
+                    for detail in _jsonschema_error_lines(e):
+                        errors.append(f"{cp}: {detail}")
                 else:
                     errors.append(f"{cp}: {e}")
             continue
@@ -545,18 +570,15 @@ def discover_benchmarks(root: Path | str) -> list[Manifest]:
     seen_ids: dict[str, Path] = {}
     load_errors: list[str] = []
 
-    # Walk benchmarks/** skipping the _template directory entirely.
+    # Walk benchmarks/** skipping directories named _template relative to the
+    # benchmarks root. The relative check is deliberate: a caller's repo path
+    # may itself live under an unrelated ancestor named "_template".
     for dirpath, dirnames, filenames in os.walk(benchmarks_root):
-        # Prune _template from descent in-place so we never visit it.
         if _TEMPLATE_DIR_NAME in dirnames:
             dirnames.remove(_TEMPLATE_DIR_NAME)
         d = Path(dirpath)
-        # Skip the _template dir itself if encountered at any depth.
-        try:
-            d.relative_to(benchmarks_root)
-        except ValueError:
-            continue
-        if _TEMPLATE_DIR_NAME in d.parts:
+        rel = d.relative_to(benchmarks_root)
+        if _TEMPLATE_DIR_NAME in rel.parts:
             continue
 
         manifest_name: str | None = None
@@ -569,7 +591,17 @@ def discover_benchmarks(root: Path | str) -> list[Manifest]:
 
         try:
             manifest = load_benchmark(d)
-        except (BenchmarkLoadError, ValidationError) as exc:
+        except ValidationError as exc:
+            error_source = d / manifest_name
+            details = _validation_error_detail_lines(exc)
+            if details:
+                load_errors.extend(
+                    f"{error_source}: {detail}" for detail in details
+                )
+            else:
+                load_errors.append(f"{error_source}: {exc}")
+            continue
+        except BenchmarkLoadError as exc:
             load_errors.append(f"{d}: {exc}")
             continue
 
@@ -619,10 +651,6 @@ def validate_benchmark(benchmark_dir: Path | str) -> Manifest:
 def format_validation_errors(error: ValidationError) -> str:
     """Render a ``ValidationError`` into actionable per-file/per-field lines."""
     lines: list[str] = [str(error)]
-    for e in error.errors:
-        if isinstance(e, jsonschema.ValidationError):
-            loc = _format_path(list(e.absolute_path))
-            lines.append(f"  - {loc}: {e.message}")
-        else:
-            lines.append(f"  - {e}")
+    for detail in _validation_error_detail_lines(error):
+        lines.append(f"  - {detail}")
     return "\n".join(lines)

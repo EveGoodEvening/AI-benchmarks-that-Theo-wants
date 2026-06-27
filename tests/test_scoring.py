@@ -151,6 +151,12 @@ class TestContainsAny:
         r = contains_any("ignored", "a dog", {"needles": ["cat", "dog"]})
         assert r.verdict == "pass"
 
+    def test_params_needles_scalar_string_is_one_needle(self) -> None:
+        r = contains_any("ignored", "a", {"needles": "cat"})
+        assert r.verdict == "fail"
+        assert r.details["needles"] == ["cat"]
+        assert r.details["matched"] == []
+
     def test_no_match(self) -> None:
         r = contains_any(["cat", "dog"], "a fish", {})
         assert r.verdict == "fail"
@@ -171,6 +177,33 @@ class TestContainsAny:
         r = contains_any("  cat  ", "the cat", {})
         assert r.verdict == "pass"
 
+
+
+# --- Shared boolean param validation ----------------------------------------
+
+
+class TestBooleanVerifierParams:
+    @pytest.mark.parametrize(
+        ("fn", "expected", "observed", "params"),
+        [
+            (exact_match, "Hello", "hello", {"case_sensitive": "false"}),
+            (exact_match, " hello ", "hello", {"trim": "false"}),
+            (exact_match, "hello   world", "hello world", {"normalize_whitespace": "true"}),
+            (contains_any, "Cat", "the cat", {"case_sensitive": "false"}),
+            (contains_any, " cat ", "the cat", {"trim": "false"}),
+            (regex_match, "a", "a", {"fullmatch": "true"}),
+            (set_f1, "A", "a", {"case_sensitive": "false"}),
+        ],
+    )
+    def test_rejects_string_boolean_params(
+        self,
+        fn: Any,
+        expected: Any,
+        observed: Any,
+        params: dict[str, Any],
+    ) -> None:
+        with pytest.raises(VerifierConfigurationError, match="must be a bool"):
+            fn(expected, observed, params)
 
 # --- regex_match ------------------------------------------------------------
 
@@ -383,6 +416,15 @@ class TestLLMJudge:
         assert r.details["judge_model"] == "m"
         assert r.details["judge_seed"] == "s"
 
+    def test_mapping_judge_config_requires_explicit_judge_params(self) -> None:
+        cfg = {
+            "judge_model": "m",
+            "judge_prompt": "p",
+            "judge_seed": "s",
+        }
+        with pytest.raises(VerifierConfigurationError, match="judge_params"):
+            llm_judge("a", "a", {"judge_config": cfg, "judge": MockLLMJudge()})
+
     def test_missing_judge_model_raises(self) -> None:
         cfg = {"judge_model": "", "judge_prompt": "p", "judge_params": {}, "judge_seed": "s"}
         with pytest.raises(VerifierConfigurationError, match="judge_model"):
@@ -396,6 +438,11 @@ class TestLLMJudge:
     def test_missing_judge_seed_raises(self) -> None:
         cfg = {"judge_model": "m", "judge_prompt": "p", "judge_params": {}, "judge_seed": None}
         with pytest.raises(VerifierConfigurationError, match="judge_seed"):
+            llm_judge("a", "a", {"judge_config": cfg, "judge": MockLLMJudge()})
+
+    def test_non_mapping_judge_params_raises(self) -> None:
+        cfg = {"judge_model": "m", "judge_prompt": "p", "judge_params": [], "judge_seed": "s"}
+        with pytest.raises(VerifierConfigurationError, match="judge_params"):
             llm_judge("a", "a", {"judge_config": cfg, "judge": MockLLMJudge()})
 
     def test_requires_judge_adapter(self) -> None:

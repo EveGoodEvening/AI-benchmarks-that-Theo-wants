@@ -194,6 +194,31 @@ class TestValidateAll:
         assert "broken" in combined
         assert "fail" in combined.lower()
 
+    def test_validate_all_discovery_failure_prints_nested_schema_details(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = _make_healthy_repo(tmp_path)
+        broken = root / "benchmarks" / "broken-nested"
+        broken.mkdir()
+        manifest = _valid_manifest_dict(bid="broken-nested")
+        manifest["metric"] = {"verifier": "not-a-verifier"}
+        (broken / "benchmark.yaml").write_text(
+            _yaml(manifest), encoding="utf-8"
+        )
+
+        monkeypatch.chdir(root)
+        rc = cli.main(["validate"])
+        err = capsys.readouterr().err
+
+        assert rc != 0
+        assert "benchmark discovery failed" in err
+        assert "broken-nested" in err
+        assert "metric.verifier" in err
+        assert "not-a-verifier" in err
+
 
 # --- Subprocess end-to-end (console script) ---------------------------------
 

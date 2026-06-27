@@ -173,8 +173,15 @@ def _collapse_whitespace(text: str) -> str:
 
 
 def _bool_param(params: Mapping[str, Any], name: str, default: bool) -> bool:
-    value = params.get(name, default)
-    return bool(value)
+    if name not in params:
+        return default
+    value = params[name]
+    if isinstance(value, bool):
+        return value
+    raise VerifierConfigurationError(
+        f"boolean verifier param {name!r} must be a bool when provided; "
+        f"got {type(value).__name__}"
+    )
 
 
 def _to_set(
@@ -317,11 +324,20 @@ def _resolve_judge_config(params: Mapping[str, Any]) -> LLMJudgeConfig:
         _validate_pinned_judge(cfg)
         return cfg
     if isinstance(cfg, Mapping):
+        if "judge_params" not in cfg:
+            raise VerifierConfigurationError(
+                "llm_judge judge_config.judge_params is required and must be a mapping"
+            )
+        judge_params = cfg["judge_params"]
+        if not isinstance(judge_params, Mapping):
+            raise VerifierConfigurationError(
+                "llm_judge judge_config.judge_params must be a mapping"
+            )
         built = LLMJudgeConfig(
             judge_model=str(cfg.get("judge_model") or ""),
             judge_prompt=str(cfg.get("judge_prompt") or ""),
             judge_seed=cfg.get("judge_seed"),
-            judge_params=dict(cfg.get("judge_params") or {}),
+            judge_params=dict(judge_params),
         )
         _validate_pinned_judge(built)
         return built
@@ -403,13 +419,14 @@ def contains_any(
 ) -> VerifierResult:
     """Pass iff the observed string contains at least one needle.
 
-    Needles are taken from ``params["needles"]`` (a list of strings) when
-    present, otherwise from ``expected`` (a list/tuple of strings, or a single
-    string treated as one needle). Empty needles are ignored. The verifier
+    Needles are taken from ``params["needles"]`` when present: a scalar string
+    is treated as one needle, while list/tuple/set values are collections of
+    needles. Otherwise, needles come from ``expected`` using the same rules.
+    Empty needles are ignored. The verifier
     fails when no non-empty needle is contained in the observed string.
 
     Params:
-      * ``needles`` (list[str], optional) -- overrides ``expected``.
+      * ``needles`` (str | list[str], optional) -- overrides ``expected``.
       * ``case_sensitive`` (bool, default False).
       * ``trim`` (bool, default True) -- strip needles and observed.
     """
@@ -419,17 +436,25 @@ def contains_any(
     needles_raw = params.get("needles")
     if needles_raw is None:
         if isinstance(expected, (list, tuple, set)):
-            needles_raw = list(expected)
+            needle_items = list(expected)
         else:
-            needles_raw = [expected]
-
+            needle_items = [expected]
+    elif isinstance(needles_raw, str):
+        needle_items = [needles_raw]
+    elif isinstance(needles_raw, (list, tuple, set)):
+        needle_items = list(needles_raw)
+    else:
+        raise VerifierConfigurationError(
+            "contains_any needles must be a string or a list/tuple/set; "
+            f"got {type(needles_raw).__name__}"
+        )
     def _norm(s: str) -> str:
         s = _to_str(s)
         if trim:
             s = s.strip()
         return s if case_sensitive else s.lower()
 
-    needles = [_norm(n) for n in needles_raw]
+    needles = [_norm(n) for n in needle_items]
     obs = _norm(observed)
 
     matched = [n for n in needles if n != "" and n in obs]
