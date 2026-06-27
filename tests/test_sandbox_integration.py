@@ -181,6 +181,28 @@ def test_contains_assertion_fails_when_diff_lacks_content() -> None:
     assert "NONEXISTENT" in result.reason
 
 
+
+def test_contains_assertion_uses_exact_diff_path_not_prefix() -> None:
+    """Diff content for ``src/app.py.bak`` must not satisfy ``src/app.py``."""
+    verifier = S.RepoStateVerifier()
+    spec = T.StateCheckSpec(
+        files={"src/app.py": {"exists": True, "contains": "needle"}},
+    )
+    state = _repo_state(
+        file_tree=("src/app.py", "src/app.py.bak"),
+        diff=(
+            "diff --git a/src/app.py.bak b/src/app.py.bak\n"
+            "--- a/src/app.py.bak\n"
+            "+++ b/src/app.py.bak\n"
+            "@@ -0,0 +1 @@\n"
+            "+needle\n"
+        ),
+    )
+    result = verifier.check(spec, state, {})
+    assert result.verdict == "fail"
+    assert "src/app.py" in result.reason
+    assert "needle" in result.reason
+
 def test_contains_assertion_fails_closed_when_content_unavailable() -> None:
     """contains must NOT silently pass when the file is present but not in the diff.
 
@@ -216,6 +238,56 @@ def test_sha256_assertion_fails_closed_as_unsupported() -> None:
     # No unchecked_sha256 detail is recorded anymore.
     assert "unchecked_sha256" not in result.details
 
+
+
+def test_repo_state_snapshot_non_git_has_no_fabricated_branch(
+    tmp_path: Path,
+) -> None:
+    """A plain directory snapshot must not invent ``main`` as a branch."""
+    root = tmp_path / "plain"
+    root.mkdir()
+    (root / "README.md").write_text("not a git repo\n", encoding="utf-8")
+    state = SB.repo_state_snapshot(root)
+    assert state.branches == ()
+
+
+def test_repo_state_snapshot_derives_unborn_branch_from_symbolic_head(
+    tmp_path: Path,
+) -> None:
+    """No-ref git repos may report the actual symbolic HEAD, not a fallback."""
+    import os
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    env = SB.sanitize_env(os.environ, sandbox_root=root, config=SB.SandboxConfig())
+    subprocess.run(["git", "init", "-q", "-b", "topic"], cwd=root, env=env, check=True)
+    state = SB.repo_state_snapshot(root)
+    assert state.branches == ("topic",)
+
+
+def test_repo_state_snapshot_fails_closed_on_dangerous_local_config(
+    tmp_path: Path,
+) -> None:
+    """Snapshot git invocations also sanitize local config before running git."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text("fixture\n", encoding="utf-8")
+    git_dir = root / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text(
+        "[core]\n"
+        "\trepositoryformatversion = 0\n"
+        "[diff]\n"
+        "\texternal = /bin/sh\n",
+        encoding="utf-8",
+    )
+    state = SB.repo_state_snapshot(root)
+    assert state.branches == ()
+    assert state.commits == ()
+    assert state.diff == ""
+    assert "git config violation" in state.git_status
+    assert "diff.external" in state.git_status
 
 # ---------------------------------------------------------------------------
 # Runner integration: enforced dispatcher + real verifier

@@ -117,6 +117,20 @@ _HOST_CREDENTIAL_PATHS: tuple[str, ...] = (
     ".netrc",
 )
 
+# Git must never read global config from an agent-writable path.  ``/dev/null``
+# is a trusted empty config source: the agent cannot persist bytes there via
+# sandbox file operations, and ``git --global`` is not allowlisted.
+_TRUSTED_EMPTY_GIT_CONFIG = os.devnull
+
+# Agent-writable global config locations that would otherwise be reachable via
+# HOME/XDG semantics.  We point git global config at
+# ``_TRUSTED_EMPTY_GIT_CONFIG`` and reject these files if they appear in the
+# sandbox so a fixture/tool transcript cannot rely on hidden config state.
+_SANDBOX_GLOBAL_GIT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+    (".gitconfig",),
+    (".config", "git", "config"),
+)
+
 # Default per-command timeout (ms) for the in-process backend.
 DEFAULT_TIMEOUT_MS = 10_000
 
@@ -390,6 +404,25 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
 # rejected outright so a sandboxed action cannot arm a follow-up git invocation
 # with an external helper, pager, editor, hook path, or alias shell escape.
 _SAFE_GIT_CONFIG_KEYS: frozenset[str] = frozenset({"user.name", "user.email"})
+
+# Local ``.git/config`` is created by ``git init`` and is necessarily read by
+# later git invocations.  Treat it as sanitized input: only the repository-core
+# keys that git itself writes during init plus the two safe identity keys the
+# dispatcher permits are allowed.  Any include, alias, pager/editor/helper,
+# hook, ssh command, filter, external diff/merge driver, remote, or branch
+# config fails closed before git is invoked.
+_SAFE_LOCAL_GIT_CONFIG_KEYS: frozenset[str] = _SAFE_GIT_CONFIG_KEYS | frozenset(
+    {
+        "core.repositoryformatversion",
+        "core.filemode",
+        "core.bare",
+        "core.logallrefupdates",
+        "core.ignorecase",
+        "core.precomposeunicode",
+        "core.symlinks",
+        "extensions.objectformat",
+    }
+)
 # C07 final hardening: git subcommands that produce/rewrite commits and would
 # otherwise run ``prepare-commit-msg``/``commit-msg``/``pre-commit``/
 # ``post-commit``/``pre-rebase``/``post-rewrite`` hooks -- arbitrary programs
@@ -956,6 +989,158 @@ def _check_symlink_escape(root: Path, path: Path) -> None:
         ancestor = ancestor.parent
 
 
+def _git_config_write_violation(root: Path, path: Path) -> str | None:
+    """Return a violation if ``file.write`` targets a git config file.
+
+    Agent-authored config files are a delayed execution/configuration channel:
+    a later allowlisted git command would read them before the argv allowlist
+    sees anything.  The safe path is explicit ``git config user.name`` /
+    ``user.email`` through the git allowlist; raw ``file.write`` to config
+    files is denied even if the proposed content looks harmless.
+    """
+    for rel in _sandbox_relative_candidates(root, path):
+        if _is_agent_writable_git_config_path(rel):
+            return (
+                f"file.write to git config file {rel!r} is denied; use the "
+                "allowlisted git config user.name/user.email commands instead"
+            )
+    return None
+
+
+def _git_config_files_violation(root: Path) -> str | None:
+    """Reject agent-writable global config and unsafe local config.
+
+    This preflight runs before every git subprocess in both backends.  Global
+    config is pinned to ``_TRUSTED_EMPTY_GIT_CONFIG``; if sandbox-global config
+    files nevertheless exist, treat them as a boundary violation.  The actual
+    local gitdir config (``.git/config`` or a confined gitdir file target) is
+    allowed only when its keys are in the strict safe set above, so dangerous
+    config written by any path fails closed before git can consume it.
+    """
+    root_resolved = root.resolve()
+    for rel_parts in _SANDBOX_GLOBAL_GIT_CONFIG_PATHS:
+        cfg = root_resolved.joinpath(*rel_parts)
+        if cfg.exists() or cfg.is_symlink():
+            return (
+                "sandbox-global git config file "
+                f"{'/'.join(rel_parts)!r} is not allowed; git global config "
+                f"is fixed to trusted empty {_TRUSTED_EMPTY_GIT_CONFIG!r}"
+            )
+
+    try:
+        local_cfg = _local_git_config_path(root, root_resolved)
+    except BoundaryViolation as exc:
+        return str(exc)
+    if local_cfg.exists() or local_cfg.is_symlink():
+        try:
+            _check_symlink_escape(root, local_cfg)
+        except BoundaryViolation as exc:
+            return str(exc)
+        return _local_git_config_violation(local_cfg)
+    return None
+
+
+def _local_git_config_path(root: Path, root_resolved: Path) -> Path:
+    git_entry = root_resolved / ".git"
+    if git_entry.is_symlink():
+        _check_symlink_escape(root, git_entry)
+        if git_entry.resolve().is_file():
+            raise BoundaryViolation(
+                f"local .git symlink {git_entry} points to a gitdir file; "
+                "only confined gitdir directories are supported"
+            )
+    if git_entry.is_file() and not git_entry.is_symlink():
+        try:
+            text = git_entry.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise BoundaryViolation(
+                f"local gitdir file {git_entry} could not be inspected safely: {exc}"
+            ) from None
+        prefix = "gitdir:"
+        first = text.splitlines()[0].strip() if text.splitlines() else ""
+        if not first.lower().startswith(prefix):
+            raise BoundaryViolation(
+                f"local .git file {git_entry} is not a supported gitdir pointer"
+            )
+        raw_target = first[len(prefix):].strip()
+        if not raw_target:
+            raise BoundaryViolation(f"local .git file {git_entry} has empty gitdir")
+        target = Path(raw_target)
+        if target.is_absolute():
+            try:
+                gitdir = target.resolve().relative_to(root_resolved)
+            except ValueError:
+                raise BoundaryViolation(
+                    f"local .git file {git_entry} points outside the sandbox root"
+                ) from None
+            resolved_gitdir = root_resolved / gitdir
+        else:
+            resolved_gitdir = _confine_lexical(root, git_entry.parent / target)
+        _check_symlink_escape(root, resolved_gitdir)
+        return resolved_gitdir / "config"
+    return git_entry / "config"
+
+
+def _sandbox_relative_candidates(root: Path, path: Path) -> set[str]:
+    """Return lexical and resolved sandbox-relative candidates for ``path``."""
+    root_resolved = root.resolve()
+    out: set[str] = set()
+    for candidate in (path, path.resolve()):
+        try:
+            out.add(candidate.relative_to(root_resolved).as_posix())
+        except ValueError:
+            continue
+    return out
+
+
+def _is_agent_writable_git_config_path(rel: str) -> bool:
+    parts = tuple(Path(rel).parts)
+    if parts in _SANDBOX_GLOBAL_GIT_CONFIG_PATHS:
+        return True
+    return len(parts) >= 2 and parts[-2:] == (".git", "config")
+
+
+def _local_git_config_violation(path: Path) -> str | None:
+    if not path.is_file():
+        return f"local git config {path} is not a regular file"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"local git config {path} could not be inspected safely: {exc}"
+
+    section: str | None = None
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("["):
+            if not line.endswith("]"):
+                return f"local git config {path} has malformed section at line {lineno}"
+            body = line[1:-1].strip()
+            if not body:
+                return f"local git config {path} has empty section at line {lineno}"
+            if any(ch.isspace() for ch in body) or '"' in body:
+                return (
+                    f"local git config {path} has disallowed subsection at "
+                    f"line {lineno}; subsections may carry remotes, branches, "
+                    "includes, or external drivers"
+                )
+            section = body.lower()
+            continue
+        if section is None:
+            return f"local git config {path} has key outside a section at line {lineno}"
+        key = line.split("=", 1)[0].strip().lower()
+        if not key:
+            return f"local git config {path} has empty key at line {lineno}"
+        full_key = f"{section}.{key}"
+        if full_key not in _SAFE_LOCAL_GIT_CONFIG_KEYS:
+            return (
+                f"local git config {path} contains disallowed key {full_key!r}; "
+                "only repository core keys and user.name/user.email are allowed"
+            )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Environment sanitization (C07.3)
 # ---------------------------------------------------------------------------
@@ -999,9 +1184,11 @@ def sanitize_env(
     out.setdefault("GIT_AUTHOR_EMAIL", "sandbox@ai-bench.local")
     out.setdefault("GIT_COMMITTER_NAME", "ai-bench-sandbox")
     out.setdefault("GIT_COMMITTER_EMAIL", "sandbox@ai-bench.local")
-    # Prevent git from reading host config files.
+    # Prevent git from reading host or agent-writable global config files.
+    # Local ``.git/config`` is sanitized by ``_git_config_files_violation``
+    # before every git invocation.
     out["GIT_CONFIG_NOSYSTEM"] = "1"
-    out["GIT_CONFIG_GLOBAL"] = str(sandbox_root / ".gitconfig")
+    out["GIT_CONFIG_GLOBAL"] = _TRUSTED_EMPTY_GIT_CONFIG
     out["GIT_TERMINAL_PROMPT"] = "0"
 
     if overrides:
@@ -1138,8 +1325,9 @@ def repo_state_snapshot(root: Path) -> T.RepoState:
 
     Captures file tree, ``git status --porcelain``, branches, commit
     summaries, and the working-tree diff against HEAD.  Safe to call on a
-    non-git directory: git fields are empty.  Git is invoked with the sandbox
-    root as cwd and a sanitized env so the snapshot itself does not touch host
+    non-git directory: git fields are empty.  Before any snapshot git
+    invocation, agent-writable config files are rejected/sanitized and git runs
+    with the sandbox root as cwd plus a sanitized env so it does not touch host
     config or network.
     """
     file_tree = _file_tree(root)
@@ -1148,18 +1336,25 @@ def repo_state_snapshot(root: Path) -> T.RepoState:
     commits: tuple[Mapping[str, str], ...] = ()
     diff = ""
     if (root / ".git").exists():
-        env = _snapshot_env(root)
-        git_status = _git_text(root, env, "status", "--porcelain")
-        branches = tuple(
-            _git_lines(root, env, "for-each-ref", "--format=%(refname:short)",
-                       "refs/heads")
-        ) or ("main",)
-        commits = _git_commits(root, env)
-        diff = _git_text(root, env, "diff", "HEAD", "--no-color") or _git_text(
-            root, env, "diff", "--cached", "--no-color"
-        )
-    else:
-        branches = ("main",)
+        config_violation = _git_config_files_violation(root)
+        if config_violation is not None:
+            git_status = f"sandbox git config violation: {config_violation}"
+        else:
+            env = _snapshot_env(root)
+            git_status = _git_text(root, env, "status", "--porcelain")
+            branch_refs = tuple(
+                _git_lines(root, env, "for-each-ref", "--format=%(refname:short)",
+                           "refs/heads")
+            )
+            if branch_refs:
+                branches = branch_refs
+            else:
+                head_branch = _git_symbolic_head_branch(root, env)
+                branches = (head_branch,) if head_branch else ()
+            commits = _git_commits(root, env)
+            diff = _git_text(root, env, "diff", "HEAD", "--no-color") or _git_text(
+                root, env, "diff", "--cached", "--no-color"
+            )
     return T.RepoState(
         file_tree=file_tree,
         git_status=git_status,
@@ -1209,6 +1404,11 @@ def _git_text(root: Path, env: Mapping[str, str], *args: str) -> str:
 def _git_lines(root: Path, env: Mapping[str, str], *args: str) -> list[str]:
     text = _git_text(root, env, *args)
     return [line for line in text.splitlines() if line.strip()]
+
+
+def _git_symbolic_head_branch(root: Path, env: Mapping[str, str]) -> str | None:
+    head = _git_text(root, env, "symbolic-ref", "--short", "HEAD").strip()
+    return head or None
 
 
 def _git_commits(root: Path, env: Mapping[str, str]) -> tuple[Mapping[str, str], ...]:
@@ -1475,6 +1675,9 @@ class InProcessSandboxDispatcher:
         # references -- complementing the option/key allowlist in
         # ``_validate_git_argv`` which cannot inspect option *values*.
         _confine_git_path_args(sandbox.root, cwd, sub, rest)
+        config_violation = _git_config_files_violation(sandbox.root)
+        if config_violation is not None:
+            raise BoundaryViolation(config_violation)
 
         # C07.3: per-command timeout.  Honor the requested limit faithfully,
         # including sub-second limits; the previous ``max(1, ...)`` floor
@@ -1520,6 +1723,9 @@ class InProcessSandboxDispatcher:
             )
         path = _resolve_sandbox_path(sandbox.root, cwd, target)
         _check_symlink_escape(sandbox.root, path)
+        config_violation = _git_config_write_violation(sandbox.root, path)
+        if config_violation is not None:
+            raise BoundaryViolation(config_violation)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return 0, f"wrote {target}\n", ""
@@ -1697,10 +1903,10 @@ class BwrapSandboxDispatcher:
 
     Used when ``bwrap`` is available on Linux.  Each git action is run inside
     a ``bwrap`` invocation with a private mount table rooted at the sandbox
-    dir, an empty network namespace (loopback only), and a seccomp filter.
-    File operations are still handled in-process (they never need a
-    subprocess); only git is dispatched through ``bwrap`` to get namespace
-    isolation.  The boundary contract (path confinement, network denial,
+    dir and an empty network namespace (loopback only).  File operations are
+    still handled in-process (they never need a subprocess); only git is
+    dispatched through ``bwrap`` to get namespace isolation.  The boundary
+    contract (path confinement, network denial,
     credential stripping, timeouts) is identical to the in-process backend.
 
     When ``bwrap`` is not available, :func:`select_dispatcher` never returns
@@ -1819,6 +2025,9 @@ class BwrapSandboxDispatcher:
                 # credential/config paths).  Shared chokepoint with the
                 # in-process backend so the two cannot drift on path confinement.
                 _confine_git_path_args(sandbox.root, cwd, sub, rest)
+                config_violation = _git_config_files_violation(sandbox.root)
+                if config_violation is not None:
+                    raise BoundaryViolation(config_violation)
 
                 timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
                 # C07.3: honor the requested limit faithfully, including

@@ -790,35 +790,74 @@ class RepoStateVerifier:
 
 
 def _diff_has_file(diff: str, path: str) -> bool:
-    """Return True if ``path`` appears in a unified diff header."""
-    needle = f" {path}\n"
-    needle2 = f" a/{path}\n"
-    return needle in diff or needle2 in diff or f"+++ b/{path}" in diff
+    """Return True iff a unified diff section targets ``path`` exactly."""
+    return any(section_path == path for section_path, _ in _iter_diff_sections(diff))
 
 
 def _diff_file_contains(diff: str, path: str, needle: str) -> bool:
-    """Return True if the added/modified lines for ``path`` contain ``needle``.
+    """Return True if added/modified lines for exact ``path`` contain ``needle``.
 
-    Walks the unified diff and, for the hunk(s) belonging to ``path``, checks
-    added lines (``+``-prefixed, excluding ``+++`` headers) for ``needle``.
-    This enforces a ``contains`` assertion against the only content the
-    snapshot carries.
+    The verifier must not match path substrings in diff headers.  A diff for
+    ``src/app.py.bak`` is not evidence about ``src/app.py`` merely because the
+    shorter path appears as a prefix in ``+++ b/src/app.py.bak``.  We first
+    split the unified diff into file sections using exact ``+++`` paths, then
+    scan only hunk additions for the requested path.
     """
-    in_file = False
-    for line in diff.splitlines():
-        if line.startswith("diff --git"):
-            in_file = (f" b/{path}" in line) or (f" a/{path}" in line) or line.endswith(f" {path}")
-        elif line.startswith("--- ") or line.startswith("+++ "):
-            # header lines belong to the current file context
-            if line.startswith("+++ ") and f"b/{path}" in line:
-                in_file = True
+    for section_path, lines in _iter_diff_sections(diff):
+        if section_path != path:
             continue
-        elif line.startswith("@@"):
-            continue
-        elif in_file and line.startswith("+") and not line.startswith("+++"):
-            if needle in line[1:]:
-                return True
+        in_hunk = False
+        for line in lines:
+            if line.startswith("@@"):
+                in_hunk = True
+                continue
+            if line.startswith("diff --git"):
+                in_hunk = False
+                continue
+            if in_hunk and line.startswith("+") and not line.startswith("+++"):
+                if needle in line[1:]:
+                    return True
     return False
+
+
+def _iter_diff_sections(diff: str) -> list[tuple[str, list[str]]]:
+    """Return ``(new_path, section_lines)`` pairs from a unified diff.
+
+    Only exact ``+++ b/<path>`` markers identify a target path.  ``/dev/null``
+    and malformed/no-path sections are skipped because they do not carry
+    content for a concrete repository file.
+    """
+    sections: list[tuple[str, list[str]]] = []
+    current_path: str | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_path, current_lines
+        if current_path is not None:
+            sections.append((current_path, current_lines))
+        current_path = None
+        current_lines = []
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            current_lines = [line]
+            continue
+        if current_lines or line.startswith("+++ ") or line.startswith("--- "):
+            current_lines.append(line)
+        if line.startswith("+++ "):
+            current_path = _parse_diff_new_path(line)
+    flush()
+    return sections
+
+
+def _parse_diff_new_path(line: str) -> str | None:
+    marker = line[4:].strip()
+    if marker == "/dev/null":
+        return None
+    if marker.startswith("b/"):
+        return marker[2:]
+    return marker or None
 
 
 def _check_git(git: Mapping[str, Any], state: RepoState) -> list[str]:

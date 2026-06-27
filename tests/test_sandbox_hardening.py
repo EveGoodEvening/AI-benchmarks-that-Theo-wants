@@ -316,6 +316,99 @@ def test_git_config_diff_external_with_diff_subcommand_still_confined(
     )
 
 
+def test_sanitize_env_uses_trusted_empty_global_git_config(tmp_path: Path) -> None:
+    """Git global config must not point at an agent-writable sandbox file."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    env = SB.sanitize_env({}, sandbox_root=root, config=SB.SandboxConfig())
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert str(root) not in env["GIT_CONFIG_GLOBAL"]
+
+
+def test_file_write_rejects_agent_writable_git_config_files(tmp_path: Path) -> None:
+    """Raw file.write cannot arm later allowlisted git via config files."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    (root / ".git").mkdir()
+    for target in (".gitconfig", ".config/git/config", ".git/config"):
+        row = _dispatch(root, "file.write", (target, "[alias]\npwn = !sh\n"))
+        assert row.sandbox_boundary_violation is True, (
+            f"{target}: expected config-file write violation, got {row}"
+        )
+        assert row.exit_code == 126
+        assert "git config" in (row.violation_reason or "").lower()
+        assert not (root / target).exists(), target
+
+
+def test_dangerous_local_git_config_rejected_before_git_invocation(
+    tmp_path: Path,
+) -> None:
+    """A malicious .git/config cannot influence a later safe git argv."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    git_dir = root / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text(
+        "[core]\n"
+        "\trepositoryformatversion = 0\n"
+        "\tfilemode = true\n"
+        "\tbare = false\n"
+        "[diff]\n"
+        "\texternal = /bin/sh\n",
+        encoding="utf-8",
+    )
+    row = _dispatch(root, "git", ("status", "--short"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    reason = (row.violation_reason or "").lower()
+    assert "local git config" in reason
+    assert "diff.external" in reason
+
+
+def test_dangerous_gitdir_file_config_rejected_before_git_invocation(
+    tmp_path: Path,
+) -> None:
+    """Local config sanitization follows a confined .git gitdir pointer."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    gitdir = root / "alt.git"
+    gitdir.mkdir()
+    (root / ".git").write_text("gitdir: alt.git\n", encoding="utf-8")
+    (gitdir / "config").write_text(
+        "[core]\n"
+        "\trepositoryformatversion = 0\n"
+        "[core]\n"
+        "\tpager = /bin/sh\n",
+        encoding="utf-8",
+    )
+    row = _dispatch(root, "git", ("status", "--short"))
+    assert row.sandbox_boundary_violation is True
+    reason = (row.violation_reason or "").lower()
+    assert "local git config" in reason
+    assert "core.pager" in reason
+
+
+def test_safe_local_git_config_keys_pass_config_preflight(tmp_path: Path) -> None:
+    """git-init core keys plus user identity are the only local config allowed."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    git_dir = root / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text(
+        "[core]\n"
+        "\trepositoryformatversion = 0\n"
+        "\tfilemode = true\n"
+        "\tbare = false\n"
+        "\tlogallrefupdates = true\n"
+        "[user]\n"
+        "\tname = fixture\n"
+        "\temail = fixture@ai-bench.local\n",
+        encoding="utf-8",
+    )
+    row = _dispatch(root, "git", ("status", "--short"))
+    assert row.sandbox_boundary_violation is False, row.violation_reason
+
+
 def test_git_relative_path_operand_dotdot_escape_denied(tmp_path: Path) -> None:
     """Relative git path operands with ``..`` that escape the sandbox are denied.
 
