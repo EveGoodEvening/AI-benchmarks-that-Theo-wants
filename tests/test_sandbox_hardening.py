@@ -340,6 +340,108 @@ def test_file_write_rejects_agent_writable_git_config_files(tmp_path: Path) -> N
         assert not (root / target).exists(), target
 
 
+def test_file_write_rejects_git_objects_alternates(tmp_path: Path) -> None:
+    """Raw writes cannot arm git object alternates for a later safe command."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    (root / ".git" / "objects" / "info").mkdir(parents=True)
+    row = _dispatch(
+        root,
+        "file.write",
+        (".git/objects/info/alternates", str(tmp_path / "outside-objects")),
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "alternates" in (row.violation_reason or "").lower()
+    assert not (root / ".git" / "objects" / "info" / "alternates").exists()
+
+
+def test_file_write_rejects_gitdir_file_target_alternates(tmp_path: Path) -> None:
+    """Alternates writes are denied after resolving a confined gitdir file."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    gitdir = root / "alt.git"
+    (gitdir / "objects" / "info").mkdir(parents=True)
+    (root / ".git").write_text("gitdir: alt.git\n", encoding="utf-8")
+    row = _dispatch(
+        root,
+        "file.write",
+        ("alt.git/objects/info/alternates", str(tmp_path / "outside-objects")),
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "alternates" in (row.violation_reason or "").lower()
+    assert not (gitdir / "objects" / "info" / "alternates").exists()
+
+
+def test_existing_git_objects_alternates_rejected_before_git_invocation(
+    tmp_path: Path,
+) -> None:
+    """An existing alternates file blocks even otherwise allowlisted git."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    alternates = root / ".git" / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True)
+    alternates.write_text(str(tmp_path / "outside-objects") + "\n", encoding="utf-8")
+    row = _dispatch(root, "git", ("cat-file", "-t", "deadbeef"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "alternates" in (row.violation_reason or "").lower()
+
+
+def test_existing_gitdir_file_target_alternates_rejected_before_git_invocation(
+    tmp_path: Path,
+) -> None:
+    """Alternates preflight follows a confined .git gitdir pointer."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    gitdir = root / "alt.git"
+    alternates = gitdir / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True)
+    (root / ".git").write_text("gitdir: alt.git\n", encoding="utf-8")
+    alternates.write_text(str(tmp_path / "outside-objects") + "\n", encoding="utf-8")
+    row = _dispatch(root, "git", ("status", "--short"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "alternates" in (row.violation_reason or "").lower()
+
+
+def test_bwrap_backend_rejects_existing_git_objects_alternates_before_invoke(
+    tmp_path: Path,
+) -> None:
+    """The bwrap path rejects alternates before it can spawn bwrap/git."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    alternates = root / ".git" / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True)
+    alternates.write_text(str(tmp_path / "outside-objects") + "\n", encoding="utf-8")
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git", argv=("status", "--short"), cwd=".",
+        env_overrides={}, timeout_ms=None,
+    )
+    orig = SB._bwrap_available
+    SB._bwrap_available = lambda: True
+    try:
+        dispatcher = SB.BwrapSandboxDispatcher()
+        row = dispatcher.dispatch(action, sandbox=handle)
+    finally:
+        SB._bwrap_available = orig
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "alternates" in (row.violation_reason or "").lower()
+
+
+def test_bwrap_backend_checks_git_metadata_before_invoke() -> None:
+    """The bwrap backend runs the same git-metadata preflight as in-process."""
+    import inspect
+
+    src = inspect.getsource(SB.BwrapSandboxDispatcher._dispatch_bwrap_git)
+    assert "_git_metadata_files_violation" in src, (
+        "bwrap backend must reject git alternates/config metadata before git"
+    )
+
+
 def test_dangerous_local_git_config_rejected_before_git_invocation(
     tmp_path: Path,
 ) -> None:

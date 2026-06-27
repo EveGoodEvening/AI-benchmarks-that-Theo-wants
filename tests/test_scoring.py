@@ -21,6 +21,7 @@ from ai_bench import types as T
 from ai_bench.scoring import (
     CaseVerdict,
     MockLLMJudge,
+    RepoStateVerifier,
     VERIFIERS,
     VERIFIER_VERSION,
     VerifierConfigurationError,
@@ -394,6 +395,29 @@ class TestStateCheck:
     def test_missing_repo_state_field_raises(self) -> None:
         with pytest.raises(VerifierConfigurationError, match="missing fields"):
             state_check(T.StateCheckSpec(), {"file_tree": []}, {})  # type: ignore[arg-type]
+
+    def test_diff_in_hunk_plus_header_line_does_not_change_target_file(self) -> None:
+        """An added ``+++ b/target`` line in another file is hunk content."""
+        diff = "\n".join(
+            [
+                "diff --git a/other.txt b/other.txt",
+                "index 0000000..1111111 100644",
+                "--- a/other.txt",
+                "+++ b/other.txt",
+                "@@ -0,0 +1,2 @@",
+                "+++ b/target.txt",
+                "+needle-from-other-file",
+            ]
+        )
+        state = _repo_state(file_tree=("target.txt", "other.txt"), diff=diff)
+        spec = T.StateCheckSpec(
+            files={"target.txt": {"exists": True, "contains": "needle-from-other-file"}}
+        )
+        result = RepoStateVerifier().check(spec, state, {})
+        assert result.verdict == "fail"
+        assert result.score == 0.0
+        assert "target.txt" in result.reason
+        assert "cannot be verified" in result.reason
 
 
 # --- llm_judge --------------------------------------------------------------

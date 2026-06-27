@@ -159,7 +159,7 @@ def test_contains_assertion_passes_when_diff_has_matching_content() -> None:
     )
     state = _repo_state(
         file_tree=("README.md", "notes.md"),
-        diff="diff --git a/notes.md b/notes.md\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+sandbox commit\n",
+        diff="diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+sandbox commit\n",
     )
     result = verifier.check(spec, state, {})
     assert result.verdict == "pass", result.reason
@@ -173,7 +173,7 @@ def test_contains_assertion_fails_when_diff_lacks_content() -> None:
     )
     state = _repo_state(
         file_tree=("README.md", "notes.md"),
-        diff="diff --git a/notes.md b/notes.md\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+sandbox commit\n",
+        diff="diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+sandbox commit\n",
     )
     result = verifier.check(spec, state, {})
     assert result.verdict == "fail"
@@ -286,7 +286,7 @@ def test_repo_state_snapshot_fails_closed_on_dangerous_local_config(
     assert state.branches == ()
     assert state.commits == ()
     assert state.diff == ""
-    assert "git config violation" in state.git_status
+    assert "git metadata violation" in state.git_status
     assert "diff.external" in state.git_status
 
 # ---------------------------------------------------------------------------

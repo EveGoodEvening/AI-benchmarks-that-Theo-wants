@@ -814,7 +814,7 @@ def _diff_file_contains(diff: str, path: str, needle: str) -> bool:
             if line.startswith("diff --git"):
                 in_hunk = False
                 continue
-            if in_hunk and line.startswith("+") and not line.startswith("+++"):
+            if in_hunk and line.startswith("+"):
                 if needle in line[1:]:
                     return True
     return False
@@ -823,30 +823,55 @@ def _diff_file_contains(diff: str, path: str, needle: str) -> bool:
 def _iter_diff_sections(diff: str) -> list[tuple[str, list[str]]]:
     """Return ``(new_path, section_lines)`` pairs from a unified diff.
 
-    Only exact ``+++ b/<path>`` markers identify a target path.  ``/dev/null``
-    and malformed/no-path sections are skipped because they do not carry
-    content for a concrete repository file.
+    Only ``+++`` markers in the file-header prelude identify a target path:
+    they must be paired with a preceding ``---`` header and appear before the
+    first hunk.  In-hunk added content can legitimately start with ``+++`` and
+    must remain ordinary content, not a new file section.
     """
     sections: list[tuple[str, list[str]]] = []
     current_path: str | None = None
     current_lines: list[str] = []
+    awaiting_new_header = False
+    in_hunk = False
 
     def flush() -> None:
-        nonlocal current_path, current_lines
+        nonlocal current_path, current_lines, awaiting_new_header, in_hunk
         if current_path is not None:
             sections.append((current_path, current_lines))
         current_path = None
         current_lines = []
+        awaiting_new_header = False
+        in_hunk = False
 
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             flush()
             current_lines = [line]
             continue
-        if current_lines or line.startswith("+++ ") or line.startswith("--- "):
+
+        if not current_lines and line.startswith("--- "):
+            current_lines = [line]
+        elif current_lines:
             current_lines.append(line)
-        if line.startswith("+++ "):
+        else:
+            continue
+
+        if line.startswith("@@"):
+            in_hunk = True
+            awaiting_new_header = False
+            continue
+        if in_hunk:
+            continue
+        if line.startswith("--- "):
+            awaiting_new_header = True
+            continue
+        if awaiting_new_header and line.startswith("+++ "):
             current_path = _parse_diff_new_path(line)
+            awaiting_new_header = False
+            continue
+        if awaiting_new_header and line.strip():
+            awaiting_new_header = False
+
     flush()
     return sections
 

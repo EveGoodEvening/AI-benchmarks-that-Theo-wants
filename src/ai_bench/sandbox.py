@@ -989,15 +989,22 @@ def _check_symlink_escape(root: Path, path: Path) -> None:
         ancestor = ancestor.parent
 
 
-def _git_config_write_violation(root: Path, path: Path) -> str | None:
-    """Return a violation if ``file.write`` targets a git config file.
+def _git_metadata_write_violation(root: Path, path: Path) -> str | None:
+    """Return a violation if ``file.write`` targets git metadata.
 
-    Agent-authored config files are a delayed execution/configuration channel:
-    a later allowlisted git command would read them before the argv allowlist
-    sees anything.  The safe path is explicit ``git config user.name`` /
-    ``user.email`` through the git allowlist; raw ``file.write`` to config
-    files is denied even if the proposed content looks harmless.
+    Agent-authored git metadata is a delayed configuration/object-channel: a
+    later allowlisted git command would consume it before argv validation can
+    help.  Raw writes to config files and object alternates are denied; use the
+    narrow git allowlist for safe identity config instead.
     """
+    config_violation = _git_config_write_violation(root, path)
+    if config_violation is not None:
+        return config_violation
+    return _git_alternates_write_violation(root, path)
+
+
+def _git_config_write_violation(root: Path, path: Path) -> str | None:
+    """Return a violation if ``file.write`` targets a git config file."""
     for rel in _sandbox_relative_candidates(root, path):
         if _is_agent_writable_git_config_path(rel):
             return (
@@ -1007,15 +1014,61 @@ def _git_config_write_violation(root: Path, path: Path) -> str | None:
     return None
 
 
+def _git_alternates_write_violation(root: Path, path: Path) -> str | None:
+    """Return a violation if ``file.write`` targets git object alternates."""
+    for rel in _sandbox_relative_candidates(root, path):
+        if _is_git_alternates_path(rel):
+            return _git_alternates_violation_reason(rel)
+    try:
+        alternates = _local_git_alternates_path(root, root.resolve())
+    except BoundaryViolation:
+        return None
+    if _same_sandbox_path(path, alternates):
+        try:
+            rel = alternates.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = str(alternates)
+        return _git_alternates_violation_reason(rel)
+    return None
+
+
+def _git_alternates_violation_reason(path: str) -> str:
+    return (
+        f"git objects alternates file {path!r} is denied; object alternates "
+        "can make allowlisted git commands read objects outside the sandbox"
+    )
+
+
+def _same_sandbox_path(left: Path, right: Path) -> bool:
+    if left == right:
+        return True
+    return left.resolve() == right.resolve()
+
+
+def _git_metadata_files_violation(root: Path) -> str | None:
+    """Reject agent-writable git metadata before invoking git.
+
+    This preflight runs before every git subprocess in both backends.  It
+    rejects sandbox-global config, unsafe local config, and object alternates
+    in the resolved gitdir.  Alternates must fail closed because they can make
+    otherwise allowlisted git commands read object databases outside the
+    sandbox boundary.
+    """
+    config_violation = _git_config_files_violation(root)
+    if config_violation is not None:
+        return config_violation
+    return _git_alternates_files_violation(root)
+
+
 def _git_config_files_violation(root: Path) -> str | None:
     """Reject agent-writable global config and unsafe local config.
 
-    This preflight runs before every git subprocess in both backends.  Global
-    config is pinned to ``_TRUSTED_EMPTY_GIT_CONFIG``; if sandbox-global config
-    files nevertheless exist, treat them as a boundary violation.  The actual
-    local gitdir config (``.git/config`` or a confined gitdir file target) is
-    allowed only when its keys are in the strict safe set above, so dangerous
-    config written by any path fails closed before git can consume it.
+    Global config is pinned to ``_TRUSTED_EMPTY_GIT_CONFIG``; if
+    sandbox-global config files nevertheless exist, treat them as a boundary
+    violation.  The actual local gitdir config (``.git/config`` or a confined
+    gitdir file target) is allowed only when its keys are in the strict safe
+    set above, so dangerous config written by any path fails closed before git
+    can consume it.
     """
     root_resolved = root.resolve()
     for rel_parts in _SANDBOX_GLOBAL_GIT_CONFIG_PATHS:
@@ -1040,7 +1093,26 @@ def _git_config_files_violation(root: Path) -> str | None:
     return None
 
 
-def _local_git_config_path(root: Path, root_resolved: Path) -> Path:
+def _git_alternates_files_violation(root: Path) -> str | None:
+    root_resolved = root.resolve()
+    try:
+        alternates = _local_git_alternates_path(root, root_resolved)
+    except BoundaryViolation as exc:
+        return str(exc)
+    if alternates.exists() or alternates.is_symlink():
+        try:
+            _check_symlink_escape(root, alternates)
+        except BoundaryViolation as exc:
+            return str(exc)
+        try:
+            rel = alternates.relative_to(root_resolved).as_posix()
+        except ValueError:
+            rel = str(alternates)
+        return _git_alternates_violation_reason(rel)
+    return None
+
+
+def _local_git_dir_path(root: Path, root_resolved: Path) -> Path:
     git_entry = root_resolved / ".git"
     if git_entry.is_symlink():
         _check_symlink_escape(root, git_entry)
@@ -1077,8 +1149,16 @@ def _local_git_config_path(root: Path, root_resolved: Path) -> Path:
         else:
             resolved_gitdir = _confine_lexical(root, git_entry.parent / target)
         _check_symlink_escape(root, resolved_gitdir)
-        return resolved_gitdir / "config"
-    return git_entry / "config"
+        return resolved_gitdir
+    return git_entry
+
+
+def _local_git_config_path(root: Path, root_resolved: Path) -> Path:
+    return _local_git_dir_path(root, root_resolved) / "config"
+
+
+def _local_git_alternates_path(root: Path, root_resolved: Path) -> Path:
+    return _local_git_dir_path(root, root_resolved) / "objects" / "info" / "alternates"
 
 
 def _sandbox_relative_candidates(root: Path, path: Path) -> set[str]:
@@ -1098,6 +1178,13 @@ def _is_agent_writable_git_config_path(rel: str) -> bool:
     if parts in _SANDBOX_GLOBAL_GIT_CONFIG_PATHS:
         return True
     return len(parts) >= 2 and parts[-2:] == (".git", "config")
+
+
+def _is_git_alternates_path(rel: str) -> bool:
+    parts = tuple(Path(rel).parts)
+    return len(parts) >= 4 and parts[-4:] == (
+        ".git", "objects", "info", "alternates",
+    )
 
 
 def _local_git_config_violation(path: Path) -> str | None:
@@ -1185,8 +1272,8 @@ def sanitize_env(
     out.setdefault("GIT_COMMITTER_NAME", "ai-bench-sandbox")
     out.setdefault("GIT_COMMITTER_EMAIL", "sandbox@ai-bench.local")
     # Prevent git from reading host or agent-writable global config files.
-    # Local ``.git/config`` is sanitized by ``_git_config_files_violation``
-    # before every git invocation.
+    # Local ``.git/config`` and object alternates are rejected by
+    # ``_git_metadata_files_violation`` before every git invocation.
     out["GIT_CONFIG_NOSYSTEM"] = "1"
     out["GIT_CONFIG_GLOBAL"] = _TRUSTED_EMPTY_GIT_CONFIG
     out["GIT_TERMINAL_PROMPT"] = "0"
@@ -1336,9 +1423,9 @@ def repo_state_snapshot(root: Path) -> T.RepoState:
     commits: tuple[Mapping[str, str], ...] = ()
     diff = ""
     if (root / ".git").exists():
-        config_violation = _git_config_files_violation(root)
-        if config_violation is not None:
-            git_status = f"sandbox git config violation: {config_violation}"
+        metadata_violation = _git_metadata_files_violation(root)
+        if metadata_violation is not None:
+            git_status = f"sandbox git metadata violation: {metadata_violation}"
         else:
             env = _snapshot_env(root)
             git_status = _git_text(root, env, "status", "--porcelain")
@@ -1387,6 +1474,8 @@ def _snapshot_env(root: Path) -> dict[str, str]:
 
 
 def _git_text(root: Path, env: Mapping[str, str], *args: str) -> str:
+    if _git_metadata_files_violation(root) is not None:
+        return ""
     try:
         proc = subprocess.run(
             ["git", *args],
@@ -1665,9 +1754,6 @@ class InProcessSandboxDispatcher:
             config=self.config,
             overrides=env_overrides,
         )
-        # C07 final hardening: disable hooks for commit-producing commands so
-        # an action-committed ``.git/hooks/*`` program cannot run.
-        env.update(_hooks_disabled_env(sandbox.root, sub))
         # C07 review: confine every git path operand/option value to the
         # sandbox root.  This catches ``..`` escapes (``config --file
         # ../host.cfg``, ``diff --no-index ../outside``, ``init ../escape``),
@@ -1675,9 +1761,13 @@ class InProcessSandboxDispatcher:
         # references -- complementing the option/key allowlist in
         # ``_validate_git_argv`` which cannot inspect option *values*.
         _confine_git_path_args(sandbox.root, cwd, sub, rest)
-        config_violation = _git_config_files_violation(sandbox.root)
-        if config_violation is not None:
-            raise BoundaryViolation(config_violation)
+        metadata_violation = _git_metadata_files_violation(sandbox.root)
+        if metadata_violation is not None:
+            raise BoundaryViolation(metadata_violation)
+
+        # C07 final hardening: disable hooks for commit-producing commands so
+        # an action-committed ``.git/hooks/*`` program cannot run.
+        env.update(_hooks_disabled_env(sandbox.root, sub))
 
         # C07.3: per-command timeout.  Honor the requested limit faithfully,
         # including sub-second limits; the previous ``max(1, ...)`` floor
@@ -1723,9 +1813,9 @@ class InProcessSandboxDispatcher:
             )
         path = _resolve_sandbox_path(sandbox.root, cwd, target)
         _check_symlink_escape(sandbox.root, path)
-        config_violation = _git_config_write_violation(sandbox.root, path)
-        if config_violation is not None:
-            raise BoundaryViolation(config_violation)
+        metadata_violation = _git_metadata_write_violation(sandbox.root, path)
+        if metadata_violation is not None:
+            raise BoundaryViolation(metadata_violation)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return 0, f"wrote {target}\n", ""
@@ -2018,16 +2108,17 @@ class BwrapSandboxDispatcher:
                     os.environ, sandbox_root=sandbox.root, config=self.config,
                     overrides=env_overrides,
                 )
-                # C07 final hardening: disable hooks for commit-producing commands.
-                env.update(_hooks_disabled_env(sandbox.root, sub))
                 # C07 review: confine every git path operand/option value to the
                 # sandbox root (``..`` escapes, absolute-outside-root, host
                 # credential/config paths).  Shared chokepoint with the
                 # in-process backend so the two cannot drift on path confinement.
                 _confine_git_path_args(sandbox.root, cwd, sub, rest)
-                config_violation = _git_config_files_violation(sandbox.root)
-                if config_violation is not None:
-                    raise BoundaryViolation(config_violation)
+                metadata_violation = _git_metadata_files_violation(sandbox.root)
+                if metadata_violation is not None:
+                    raise BoundaryViolation(metadata_violation)
+
+                # C07 final hardening: disable hooks for commit-producing commands.
+                env.update(_hooks_disabled_env(sandbox.root, sub))
 
                 timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
                 # C07.3: honor the requested limit faithfully, including
