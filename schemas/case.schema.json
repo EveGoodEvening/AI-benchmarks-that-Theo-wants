@@ -189,6 +189,29 @@
   },
   "allOf": [
     {
+      "description": "Normal (non-failure) cases must carry a non-null scoring target and case-level provenance with a license.",
+      "if": {
+        "not": {
+          "properties": { "expected": { "type": "null" } },
+          "required": ["expected"]
+        }
+      },
+      "then": {
+        "required": ["expected", "provenance"],
+        "properties": {
+          "expected": { "not": { "type": "null" } },
+          "provenance": {
+            "type": "object",
+            "required": ["license"],
+            "properties": {
+              "license": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "Preserved failure cases (expected is null) must carry explicit expected_metadata with a reason.",
       "if": {
         "properties": { "expected": { "type": "null" } },
         "required": ["expected"]
@@ -204,6 +227,42 @@
             }
           }
         }
+      }
+    },
+    {
+      "description": "State-check cases must declare an expected state_check block.",
+      "if": {
+        "properties": {
+          "verifier": {
+            "properties": { "verifier": { "const": "state_check" } },
+            "required": ["verifier"]
+          }
+        },
+        "required": ["verifier"]
+      },
+      "then": {
+        "required": ["state_check"],
+        "properties": {
+          "state_check": {
+            "type": "object",
+            "minProperties": 1
+          }
+        }
+      }
+    },
+    {
+      "description": "LLM-judge cases must pin an llm_judge config (judge model, prompt, params, seed).",
+      "if": {
+        "properties": {
+          "verifier": {
+            "properties": { "verifier": { "const": "llm_judge" } },
+            "required": ["verifier"]
+          }
+        },
+        "required": ["verifier"]
+      },
+      "then": {
+        "required": ["llm_judge"]
       }
     }
   ]

@@ -161,6 +161,7 @@ class BenchmarkManifest:
     status: BenchmarkStatus = "experimental"
     prompt_template: PromptTemplate | None = None
     sampling: Mapping[str, Any] = field(default_factory=dict)
+    llm_judge: LLMJudgeConfig | None = None
 
 
 # --- Case definition --------------------------------------------------------

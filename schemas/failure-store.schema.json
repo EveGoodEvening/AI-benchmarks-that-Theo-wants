@@ -147,7 +147,28 @@
           "type": "string",
           "description": "Optional precomputed deduplication key derived from the full reproducibility determinant set. If absent, the consumer recomputes it from the determinant fields."
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "A null expected value (preserved failure case) must carry expected_metadata with a non-empty reason.",
+          "if": {
+            "properties": { "expected": { "type": "null" } },
+            "required": ["expected"]
+          },
+          "then": {
+            "required": ["expected_metadata"],
+            "properties": {
+              "expected_metadata": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

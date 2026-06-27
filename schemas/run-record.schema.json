@@ -160,6 +160,67 @@
       }
     }
   },
+  "allOf": [
+    {
+      "description": "Text benchmark runs must preserve per-case raw text output (observed) for replay/failure preservation.",
+      "if": {
+        "properties": {
+          "benchmark": {
+            "properties": { "task_type": { "const": "text" } },
+            "required": ["task_type"]
+          }
+        },
+        "required": ["benchmark"]
+      },
+      "then": {
+        "properties": {
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["observed"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "Tool-task (or replay) runs must preserve per-case tool-action transcript and final repo-state for replay/failure preservation.",
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "benchmark": {
+                "properties": { "task_type": { "const": "tool-task" } },
+                "required": ["task_type"]
+              }
+            },
+            "required": ["benchmark"]
+          },
+          {
+            "properties": {
+              "model": {
+                "properties": { "adapter": { "const": "replay" } },
+                "required": ["adapter"]
+              }
+            },
+            "required": ["model"]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["transcript", "final_repo_state"]
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "case_result": {
       "type": "object",

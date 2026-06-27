@@ -79,7 +79,7 @@ def _valid_benchmark_manifest(
     task_type: str = "text",
     verifier: str = "exact_match",
 ) -> dict[str, Any]:
-    return {
+    manifest: dict[str, Any] = {
         "schema_version": "1",
         "id": "description-label",
         "name": "Description-to-label",
@@ -94,6 +94,14 @@ def _valid_benchmark_manifest(
         "tags": tags if tags is not None else ["recreation", "spatial-reasoning"],
         "status": status,
     }
+    if verifier == "llm_judge":
+        manifest["llm_judge"] = {
+            "judge_model": "pinned-judge",
+            "judge_prompt": "Is this correct?",
+            "judge_params": {"temperature": 0.0},
+            "judge_seed": 1,
+        }
+    return manifest
 
 
 def _valid_case(
@@ -312,6 +320,16 @@ class TestBenchmarkSchema:
                 manifest["task_type"] = "tool-task"
             _validate(benchmark_schema, manifest)
 
+    def test_llm_judge_metric_without_pinned_config_rejected(
+        self, benchmark_schema: dict[str, Any]
+    ) -> None:
+        # An llm_judge benchmark metric must pin judge metadata; the helper
+        # adds it by default, so strip it to assert rejection.
+        manifest = _valid_benchmark_manifest(verifier="llm_judge")
+        del manifest["llm_judge"]
+        err = _invalid(benchmark_schema, manifest)
+        assert "llm_judge" in str(err).lower()
+
 
 # === Case schema ============================================================
 
@@ -378,6 +396,47 @@ class TestCaseSchema:
         case["unexpected_field"] = "boom"
         err = _invalid(case_schema, case)
         assert "unexpected_field" in str(err) or "additional" in str(err).lower()
+
+    def test_normal_case_missing_expected_rejected(
+        self, case_schema: dict[str, Any]
+    ) -> None:
+        # A normal (non-failure) case must carry a non-null scoring target.
+        case = _valid_case()
+        del case["expected"]
+        err = _invalid(case_schema, case)
+        assert "expected" in str(err).lower()
+
+    def test_normal_case_missing_provenance_rejected(
+        self, case_schema: dict[str, Any]
+    ) -> None:
+        case = _valid_case()
+        del case["provenance"]
+        err = _invalid(case_schema, case)
+        assert "provenance" in str(err).lower()
+
+    def test_normal_case_provenance_without_license_rejected(
+        self, case_schema: dict[str, Any]
+    ) -> None:
+        case = _valid_case()
+        case["provenance"] = {"source": "original"}
+        err = _invalid(case_schema, case)
+        assert "license" in str(err).lower()
+
+    def test_state_check_verifier_without_state_check_block_rejected(
+        self, case_schema: dict[str, Any]
+    ) -> None:
+        case = _valid_case()
+        case["verifier"] = {"verifier": "state_check", "params": {}}
+        err = _invalid(case_schema, case)
+        assert "state_check" in str(err).lower()
+
+    def test_llm_judge_verifier_without_pinned_config_rejected(
+        self, case_schema: dict[str, Any]
+    ) -> None:
+        case = _valid_case()
+        case["verifier"] = {"verifier": "llm_judge", "params": {}}
+        err = _invalid(case_schema, case)
+        assert "llm_judge" in str(err).lower()
 
 
 # === Run-record schema ======================================================
@@ -481,6 +540,40 @@ class TestRunRecordSchema:
         err = _invalid(run_record_schema, record)
         assert "adapter" in str(err).lower() or "magic" in str(err).lower()
 
+    def test_text_result_without_raw_output_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # Text benchmark runs must preserve per-case raw text output.
+        record = _valid_run_record(task_type="text")
+        del record["cases"][0]["observed"]
+        err = _invalid(run_record_schema, record)
+        assert "observed" in str(err).lower()
+
+    def test_tool_task_result_without_transcript_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        record = _valid_run_record(task_type="tool-task")
+        del record["cases"][0]["transcript"]
+        err = _invalid(run_record_schema, record)
+        assert "transcript" in str(err).lower()
+
+    def test_tool_task_result_without_final_repo_state_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        record = _valid_run_record(task_type="tool-task")
+        del record["cases"][0]["final_repo_state"]
+        err = _invalid(run_record_schema, record)
+        assert "final_repo_state" in str(err).lower()
+
+    def test_replay_result_without_transcript_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # Replay adapter runs must preserve transcript + final repo state.
+        record = _valid_run_record(task_type="text")
+        record["model"]["adapter"] = "replay"
+        err = _invalid(run_record_schema, record)
+        assert "transcript" in str(err).lower() or "final_repo_state" in str(err).lower()
+
 
 # === Failure-store schema ===================================================
 
@@ -554,6 +647,23 @@ class TestFailureStoreSchema:
         store["failures"][0]["expected_metadata"] = {"reason": "preserved_failure_case"}
         _validate(failure_store_schema, store)
 
+    def test_null_expected_without_metadata_rejected(
+        self, failure_store_schema: dict[str, Any]
+    ) -> None:
+        store = _valid_failure_store()
+        store["failures"][0]["expected"] = None
+        err = _invalid(failure_store_schema, store)
+        assert "expected_metadata" in str(err).lower() or "reason" in str(err).lower()
+
+    def test_null_expected_metadata_without_reason_rejected(
+        self, failure_store_schema: dict[str, Any]
+    ) -> None:
+        store = _valid_failure_store()
+        store["failures"][0]["expected"] = None
+        store["failures"][0]["expected_metadata"] = {"source_run_record": "run-0001"}
+        err = _invalid(failure_store_schema, store)
+        assert "reason" in str(err).lower()
+
 
 # === Typed-contract / schema drift guard ====================================
 
@@ -587,6 +697,32 @@ class TestTypedContractDrift:
         )
         _validate(benchmark_schema, _dataclass_to_dict(manifest))
 
+    def test_benchmark_manifest_llm_judge_dataclass_validates(
+        self, benchmark_schema: dict[str, Any]
+    ) -> None:
+        manifest = T.BenchmarkManifest(
+            schema_version="1",
+            id="llm-judged-bench",
+            name="LLM-judged benchmark",
+            description="A benchmark scored by a pinned LLM judge.",
+            domain="recreation",
+            task_type="text",
+            metric=T.MetricConfig(verifier="llm_judge", params={}),
+            version="0.1.0",
+            contributor=T.Contributor(name="AI-bench contributors"),
+            license="MIT",
+            case_glob="cases/*.yaml",
+            tags=("recreation",),
+            status="experimental",
+            llm_judge=T.LLMJudgeConfig(
+                judge_model="pinned-judge",
+                judge_prompt="Is this correct?",
+                judge_params={"temperature": 0.0},
+                judge_seed=1,
+            ),
+        )
+        _validate(benchmark_schema, _dataclass_to_dict(manifest))
+
     def test_case_definition_dataclass_validates(
         self, case_schema: dict[str, Any]
     ) -> None:
@@ -612,7 +748,12 @@ class TestTypedContractDrift:
             expected_metadata={"reason": "preserved_failure_case", "source_run_record": "run-0001"},
             tags=(),
         )
-        _validate(case_schema, _dataclass_to_dict(case))
+        serialized = _dataclass_to_dict(case)
+        # A preserved failure case serializes expected as an explicit null so
+        # the schema's null-expected branch (requiring expected_metadata.reason)
+        # applies; _dataclass_to_dict omits None, so re-inject it here.
+        serialized["expected"] = None
+        _validate(case_schema, serialized)
 
     def test_run_record_dataclass_validates_text(
         self, run_record_schema: dict[str, Any]

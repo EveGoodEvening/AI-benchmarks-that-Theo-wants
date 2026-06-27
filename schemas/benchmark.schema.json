@@ -161,6 +161,35 @@
       "type": "object",
       "description": "Default sampling parameters for the benchmark; overridable per run.",
       "additionalProperties": true
+    },
+    "llm_judge": {
+      "type": "object",
+      "description": "Pinned LLM-judge configuration required when the benchmark metric verifier is llm_judge and no per-case llm_judge override is provided. The judge model, prompt, params, and seed must be pinned for reproducibility.",
+      "additionalProperties": false,
+      "required": ["judge_model", "judge_prompt", "judge_params", "judge_seed"],
+      "properties": {
+        "judge_model": { "type": "string", "minLength": 1 },
+        "judge_prompt": { "type": "string", "minLength": 1 },
+        "judge_params": { "type": "object", "additionalProperties": true },
+        "judge_seed": { "type": ["string", "integer"] }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "description": "An llm_judge benchmark metric must pin judge metadata at the benchmark level so it cannot validate without a reproducible judge configuration.",
+      "if": {
+        "properties": {
+          "metric": {
+            "properties": { "verifier": { "const": "llm_judge" } },
+            "required": ["verifier"]
+          }
+        },
+        "required": ["metric"]
+      },
+      "then": {
+        "required": ["llm_judge"]
+      }
+    }
+  ]
 }
