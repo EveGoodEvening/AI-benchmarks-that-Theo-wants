@@ -1,0 +1,28 @@
+schema_version: "1"
+id: clean-untracked
+input:
+  prompt: "Create an untracked file build.tmp, then remove untracked files with git clean."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: file.write, argv: ["build.tmp", "junk\n"], cwd: "."}
+    - {command: git, argv: ["clean", "-fd"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  absent: ["build.tmp"]
+  git:
+    status_clean: true
+    head_commit_message: "seed repo"
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "git clean -fd removes untracked file."
+tags: [git, clean]
+difficulty: easy

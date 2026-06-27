@@ -1,0 +1,30 @@
+schema_version: "1"
+id: reset-soft
+input:
+  prompt: "Create notes.md, commit as 'add notes', then soft-reset the commit so the file remains staged but the commit is undone. Leave the index as-is after reset."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: file.write, argv: ["notes.md", "reset me\n"], cwd: "."}
+    - {command: git, argv: ["add", "notes.md"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "add notes"], cwd: "."}
+    - {command: git, argv: ["reset", "--soft", "HEAD~1"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  files:
+    notes.md: {exists: true}
+  git:
+    head_commit_message: "seed repo"
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Soft reset undoes commit, leaves index staged (dirty); status_clean not asserted."
+tags: [git, reset]
+difficulty: medium

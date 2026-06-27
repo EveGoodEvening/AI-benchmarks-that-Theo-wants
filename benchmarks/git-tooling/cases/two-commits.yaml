@@ -1,0 +1,33 @@
+schema_version: "1"
+id: two-commits
+input:
+  prompt: "Create notes.md and commit as 'add notes', then update notes.md and commit the update as 'update notes'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: file.write, argv: ["notes.md", "v1\n"], cwd: "."}
+    - {command: git, argv: ["add", "notes.md"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "add notes"], cwd: "."}
+    - {command: file.write, argv: ["notes.md", "v2\n"], cwd: "."}
+    - {command: git, argv: ["add", "notes.md"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "update notes"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  files:
+    notes.md: {exists: true}
+  git:
+    status_clean: true
+    head_commit_message: "update notes"
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Two sequential commits; head subject is the update."
+tags: [git, commit]
+difficulty: medium

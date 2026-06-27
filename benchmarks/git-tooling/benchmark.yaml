@@ -1,0 +1,40 @@
+schema_version: "1"
+id: git-tooling
+name: Git tool-proficiency
+description: >
+  Original agent tool-proficiency tasks exercised through git and filesystem
+  tool actions inside a hermetic sandbox. Each case gives an agent a seeded
+  working tree and an instruction; the agent emits structured tool actions
+  (git/file.write) and the final repository state is checked by the built-in
+  state_check verifier. Inspired by the shape of Theo's GitBench: a
+  tool-proficiency benchmark that scores whether an agent can drive git to a
+  target repository state. All cases are original fixtures written for this
+  suite; they are not imports of GitBench and imply no endorsement from Theo.
+domain: tool-use
+task_type: tool-task
+metric:
+  verifier: state_check
+  params: {}
+version: "0.1.0"
+contributor:
+  name: AI-bench contributors
+  contact: https://example.org/ai-bench
+license: CC0-1.0
+case_glob: "cases/*.yaml"
+tags:
+  - tool-use
+  - git
+  - tool-proficiency
+  - state-check
+status: experimental
+prompt_template:
+  version: "1"
+  template: |
+    You are operating inside a hermetic sandbox with a seeded git working tree.
+    Use only the provided tool actions (git, file.write, file.read). Do not
+    attempt network access or host credential use. Achieve the target repository
+    state described below.
+
+    Task: {input}
+sampling:
+  temperature: 0.0

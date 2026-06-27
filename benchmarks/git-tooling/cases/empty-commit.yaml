@@ -1,0 +1,28 @@
+schema_version: "1"
+id: empty-commit
+input:
+  prompt: "Create an empty commit with message 'empty'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["commit", "--allow-empty", "-m", "empty"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  git:
+    status_clean: true
+    head_commit_message: "empty"
+    branches: ["main"]
+  files:
+    README.md: {exists: true}
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Empty commit advances HEAD with no tree change."
+tags: [git, commit]
+difficulty: easy

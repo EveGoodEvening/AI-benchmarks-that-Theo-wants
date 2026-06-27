@@ -1,0 +1,32 @@
+schema_version: "1"
+id: revert-commit
+input:
+  prompt: "Create notes.md, commit as 'add notes', then revert that commit with a message 'revert add notes'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: file.write, argv: ["notes.md", "temp\n"], cwd: "."}
+    - {command: git, argv: ["add", "notes.md"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "add notes"], cwd: "."}
+    - {command: git, argv: ["revert", "HEAD", "-m", "revert add notes"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  absent: ["notes.md"]
+  git:
+    status_clean: true
+    head_commit_message: "revert add notes"
+    branches: ["main"]
+  files:
+    README.md: {exists: true}
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Revert removes notes.md via a new revert commit."
+tags: [git, revert]
+difficulty: hard

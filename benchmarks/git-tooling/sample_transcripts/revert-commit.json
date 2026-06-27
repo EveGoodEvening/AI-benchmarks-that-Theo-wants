@@ -1,0 +1,176 @@
+{
+  "case_id": "revert-commit",
+  "transcript": [
+    {
+      "command": "git",
+      "argv": [
+        "init",
+        "-q",
+        "-b",
+        "main"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "config",
+        "user.name",
+        "ai-bench"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "config",
+        "user.email",
+        "ai-bench@local"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "add",
+        "-A"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "commit",
+        "-q",
+        "-m",
+        "seed repo"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "file.write",
+      "argv": [
+        "notes.md",
+        "temp\n"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "add",
+        "notes.md"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "commit",
+        "-m",
+        "add notes"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "revert",
+        "HEAD",
+        "-m",
+        "revert add notes"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    }
+  ],
+  "final_repo_state": {
+    "file_tree": [
+      "README.md",
+      "src/app.py",
+      "docs/intro.md"
+    ],
+    "git_status": "",
+    "branches": [
+      "main"
+    ],
+    "commits": [
+      {
+        "sha": "abcdef0",
+        "subject": "revert add notes"
+      }
+    ],
+    "diff": ""
+  }
+}

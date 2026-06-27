@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: C01, C02, C03, C04, C05, C06, and C07 implemented and verified; C08-C13 not started.
+Implementation state: C01, C02, C03, C04, C05, C06, C07, and C08 implemented and verified; C09-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -215,7 +215,7 @@ A future session may run chunks in parallel only when they do not touch the same
 - Review-fix evidence (C07 ultimate follow-up): Addressed the final two C07 security-review findings in `src/ai_bench/sandbox.py`, `src/ai_bench/scoring.py`, `tests/test_sandbox_hardening.py`, `tests/test_scoring.py`, and this tracker only (no C08 work): git object alternates are now denied for raw writes and existing alternates fail closed before allowlisted git in both in-process and bwrap paths, including confined gitdir-file targets; unified-diff parsing now treats `+++` as a file header only in the `---`/`+++` pre-hunk header context so in-hunk added `+++ b/...` lines cannot satisfy another file's `contains` assertion. Final orchestrator verification after these alternates/diff fixes is recorded in the C07 verification evidence above.
 - Review-fix evidence (C07 commondir metadata escape): Addressed the final commondir bypass in `src/ai_bench/sandbox.py` and `tests/test_sandbox_hardening.py` only (no C08 work): raw `file.write` to git `commondir` metadata is denied, and existing `commondir` metadata in a confined gitdir fails closed through the shared git-metadata preflight used by both in-process and bwrap git dispatch. Final orchestrator verification after the commondir hardening fix is recorded in the C07 verification evidence above.
 
-### [ ] C08 — Reference benchmark B: git tool-proficiency benchmark
+### [x] C08 — Reference benchmark B: git tool-proficiency benchmark
 
 - Conventional Commit candidate: `feat(benchmarks): add git tool-proficiency reference benchmark`
 - Owned files/scope: `benchmarks/git-tooling/benchmark.yaml`, `benchmarks/git-tooling/cases/*.yaml`, `benchmarks/git-tooling/fixtures/**`, `benchmarks/git-tooling/README.md`, optional `tests/test_git_tooling_benchmark.py`.
@@ -226,14 +226,15 @@ A future session may run chunks in parallel only when they do not touch the same
 - Review criteria: 20-50 original hermetic git tasks; deterministic expected states; manifest populates `tags` and `status` per C02 schema; fixtures rely on the enforced C07 sandbox guarantees (network denial, credential stripping, path confinement, timeouts) and cannot reach outbound network or host credentials; benchmark measures tool proficiency rather than trivia; a checked-in non-stub transcript-replay sample is scored by the real state-check verifier (not a stub; plumbing from C05, real verifier from C07.2) and produces a valid run-record, exercising the real-verifier transcript-replay acceptance owned by C07.2.
 - Review addendum: C08 acceptance relies on valid run-record generation and deterministic state-check scoring, not on every replayed transcript verdict passing.
 - Tasks:
-  - [ ] Create benchmark manifest populating `tags` and `status` (e.g. `status: experimental`).
-  - [ ] Add fixture repositories.
-  - [ ] Add original git/tool-use cases.
-  - [ ] Add smoke subset via the reserved `smoke` case tag, covering pass and fail paths.
-  - [ ] Add benchmark README with sandbox assumptions.
-  - [ ] Add a checked-in non-stub transcript-replay sample (`benchmarks/git-tooling/sample_transcripts`) and run the `--replay` non-stub scoring path; record a schema-valid run-record.
-  - [ ] Record run-command exit status separately from case pass rate, relying on C05 semantics: schema-valid run-records with failed verdicts are acceptable evaluation evidence; non-zero run exits are not.
-  - [ ] Run and record verification commands.
+  - [x] Create benchmark manifest populating `tags` and `status` (e.g. `status: experimental`).
+  - [x] Add fixture repositories.
+  - [x] Add original git/tool-use cases.
+  - [x] Add smoke subset via the reserved `smoke` case tag, covering pass and fail paths.
+  - [x] Add benchmark README with sandbox assumptions.
+  - [x] Add a checked-in non-stub transcript-replay sample (`benchmarks/git-tooling/sample_transcripts`) and run the `--replay` non-stub scoring path; record a schema-valid run-record.
+  - [x] Record run-command exit status separately from case pass rate, relying on C05 semantics: schema-valid run-records with failed verdicts are acceptable evaluation evidence; non-zero run exits are not.
+  - [x] Run and record verification commands.
+- Verification evidence (C08): Orchestrator verification passed. `uv run ai-bench validate benchmarks/git-tooling` -> OK cases=24 smoke=4. `uv run ai-bench run benchmarks/git-tooling --model stub -o /tmp/c08-stub.json` -> exit 0 cases=24 pass=15 fail=9. `uv run ai-bench run benchmarks/git-tooling --tag smoke --model stub -o /tmp/c08-smoke.json` -> exit 0 cases=4 pass=2 fail=2. `uv run ai-bench run benchmarks/git-tooling --replay benchmarks/git-tooling/sample_transcripts -o /tmp/c08-replay.json` -> exit 0 cases=24 pass=23 fail=1. `uv run pytest tests/test_git_tooling_benchmark.py -q` -> 8 passed. `uv run ai-bench validate` -> two benchmarks valid. `uv run pytest -q` -> passed, one skipped. Run-command exits are recorded separately from case pass rates per the C05 contract; failed verdicts are scored evaluation data, not process failures.
 
 ### [ ] C09 — Failure-case preservation + retry + hard-set
 

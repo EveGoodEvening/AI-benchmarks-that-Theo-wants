@@ -1,0 +1,27 @@
+schema_version: "1"
+id: list-files
+input:
+  prompt: "Run git status --short to inspect the working tree. Make no changes."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["status", "--short"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  git:
+    status_clean: true
+    head_commit_message: "seed repo"
+    branches: ["main"]
+  absent: ["notes.md"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Read-only inspection; no mutation expected."
+tags: [git, inspection]
+difficulty: trivial

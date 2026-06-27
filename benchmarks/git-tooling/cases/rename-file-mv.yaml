@@ -1,0 +1,30 @@
+schema_version: "1"
+id: rename-file-mv
+input:
+  prompt: "Rename src/app.py to src/main.py and commit as 'rename app to main'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["mv", "src/app.py", "src/main.py"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "rename app to main"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  absent: ["src/app.py"]
+  files:
+    "src/main.py": {exists: true}
+  git:
+    status_clean: true
+    head_commit_message: "rename app to main"
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "git mv rename + commit."
+tags: [git, mv]
+difficulty: easy

@@ -1,0 +1,28 @@
+schema_version: "1"
+id: branch-list
+input:
+  prompt: "Create branches 'dev' and 'release' (without switching), then list branches. Make no commits."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["branch", "dev"], cwd: "."}
+    - {command: git, argv: ["branch", "release"], cwd: "."}
+    - {command: git, argv: ["branch", "--list"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  git:
+    branches: ["main", "dev", "release"]
+    status_clean: true
+    head_commit_message: "seed repo"
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Create branches without switching; read-only listing."
+tags: [git, branch, inspection]
+difficulty: easy

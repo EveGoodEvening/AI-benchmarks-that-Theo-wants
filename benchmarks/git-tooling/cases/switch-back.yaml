@@ -1,0 +1,27 @@
+schema_version: "1"
+id: switch-back
+input:
+  prompt: "Switch to a new branch 'feature', then switch back to main."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["switch", "-c", "feature"], cwd: "."}
+    - {command: git, argv: ["switch", "main"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  git:
+    branches: ["main", "feature"]
+    status_clean: true
+    head_commit_message: "seed repo"
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Create branch then return to main; HEAD unchanged."
+tags: [git, switch]
+difficulty: easy

@@ -1,0 +1,26 @@
+schema_version: "1"
+id: create-branch
+input:
+  prompt: "Create and switch to a new branch named 'feature'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["switch", "-c", "feature"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  git:
+    branches: ["main", "feature"]
+    status_clean: true
+    head_commit_message: "seed repo"
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Branch creation via switch -c."
+tags: [git, branch, smoke]
+difficulty: easy

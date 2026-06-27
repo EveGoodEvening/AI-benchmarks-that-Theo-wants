@@ -1,0 +1,26 @@
+schema_version: "1"
+id: create-tag
+input:
+  prompt: "Create an annotated tag 'v1.0' on the current commit with message 'first release'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["tag", "-a", "v1.0", "-m", "first release"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  git:
+    status_clean: true
+    head_commit_message: "seed repo"
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Annotated tag; tags not in repo_state snapshot, only clean state asserted."
+tags: [git, tag]
+difficulty: easy

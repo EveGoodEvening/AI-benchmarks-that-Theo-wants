@@ -1,0 +1,27 @@
+schema_version: "1"
+id: dirty-no-commit
+input:
+  prompt: "Create notes.md with the text 'sandbox commit\n' but do NOT stage or commit it."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: file.write, argv: ["notes.md", "sandbox commit\n"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  files:
+    notes.md: {exists: true}
+  git:
+    status_clean: true
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Intentional FAIL smoke path: working tree left dirty so status_clean fails."
+tags: [git, commit, smoke]
+difficulty: easy

@@ -1,0 +1,141 @@
+{
+  "case_id": "delete-file-rm",
+  "transcript": [
+    {
+      "command": "git",
+      "argv": [
+        "init",
+        "-q",
+        "-b",
+        "main"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "config",
+        "user.name",
+        "ai-bench"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "config",
+        "user.email",
+        "ai-bench@local"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "add",
+        "-A"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "commit",
+        "-q",
+        "-m",
+        "seed repo"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "rm",
+        "docs/intro.md"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    },
+    {
+      "command": "git",
+      "argv": [
+        "commit",
+        "-m",
+        "remove intro"
+      ],
+      "cwd": ".",
+      "env_overrides": {},
+      "stdin": null,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "wall_clock_ms": 1,
+      "timeout": false,
+      "sandbox_boundary_violation": false
+    }
+  ],
+  "final_repo_state": {
+    "file_tree": [
+      "README.md",
+      "src/app.py"
+    ],
+    "git_status": "",
+    "branches": [
+      "main"
+    ],
+    "commits": [
+      {
+        "sha": "abcdef0",
+        "subject": "remove intro"
+      }
+    ],
+    "diff": ""
+  }
+}

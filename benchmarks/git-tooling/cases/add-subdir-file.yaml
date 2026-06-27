@@ -1,0 +1,30 @@
+schema_version: "1"
+id: add-subdir-file
+input:
+  prompt: "Create src/util.py with 'def util():\n    pass\n', stage and commit it as 'add util'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: file.write, argv: ["src/util.py", "def util():\n    pass\n"], cwd: "."}
+    - {command: git, argv: ["add", "src/util.py"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "add util"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  files:
+    "src/util.py": {exists: true}
+  git:
+    status_clean: true
+    head_commit_message: "add util"
+    branches: ["main"]
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "Add a file in an existing subdirectory and commit."
+tags: [git, commit, filesystem]
+difficulty: easy

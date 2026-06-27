@@ -1,0 +1,31 @@
+schema_version: "1"
+id: delete-file-rm
+input:
+  prompt: "Remove docs/intro.md from the repo and commit the deletion as 'remove intro'."
+  fixture: "fixtures/seed"
+  script:
+    - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
+    - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
+    - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
+    - {command: git, argv: ["rm", "docs/intro.md"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "remove intro"], cwd: "."}
+verifier: {verifier: state_check}
+state_check:
+  absent: ["docs/intro.md"]
+  git:
+    status_clean: true
+    head_commit_message: "remove intro"
+    branches: ["main"]
+  files:
+    README.md: {exists: true}
+    "src/app.py": {exists: true}
+expected: "state-check"
+provenance:
+  source: original
+  author: AI-bench contributors
+  license: CC0-1.0
+  notes: "git rm + commit deletion."
+tags: [git, rm]
+difficulty: easy
