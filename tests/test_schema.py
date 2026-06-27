@@ -156,7 +156,11 @@ def _valid_repo_state() -> dict[str, Any]:
     }
 
 
-def _valid_run_record(*, task_type: str = "text") -> dict[str, Any]:
+def _valid_run_record(
+    *,
+    task_type: str = "text",
+    verifier: str = "exact_match",
+) -> dict[str, Any]:
     case_result: dict[str, Any] = {
         "case_id": "case-1",
         "verdict": "pass",
@@ -168,6 +172,14 @@ def _valid_run_record(*, task_type: str = "text") -> dict[str, Any]:
     if task_type == "tool-task":
         case_result["transcript"] = [_valid_tool_action()]
         case_result["final_repo_state"] = _valid_repo_state()
+    verifier_block: dict[str, Any] = {"name": verifier, "version": "1.0.0"}
+    if verifier == "llm_judge":
+        verifier_block["judge_config"] = {
+            "judge_model": "pinned-judge",
+            "judge_prompt": "Is this correct?",
+            "judge_params": {"temperature": 0.0},
+            "judge_seed": 1,
+        }
     return {
         "schema_version": "1",
         "run_id": "run-0001",
@@ -193,11 +205,11 @@ def _valid_run_record(*, task_type: str = "text") -> dict[str, Any]:
             "runner_version": "0.1.0",
         },
         "metric_params": {"case_sensitive": False},
-        "verifier": {"name": "exact_match", "version": "1.0.0"},
+        "verifier": verifier_block,
         "tag_filter": "smoke",
         "cases": [case_result],
         "aggregate": {
-            "metric": "exact_match",
+            "metric": verifier,
             "value": 1.0,
             "n_cases": 1,
             "n_pass": 1,
@@ -574,6 +586,63 @@ class TestRunRecordSchema:
         err = _invalid(run_record_schema, record)
         assert "transcript" in str(err).lower() or "final_repo_state" in str(err).lower()
 
+    def test_llm_judge_verifier_with_judge_config_accepted(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # An llm_judge run verifier with a pinned judge_config validates.
+        record = _valid_run_record(verifier="llm_judge")
+        _validate(run_record_schema, record)
+
+    def test_llm_judge_verifier_without_judge_config_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # An llm_judge run verifier must pin judge_config; stripping it must
+        # be rejected so the run-record cannot validate without a reproducible
+        # judge configuration.
+        record = _valid_run_record(verifier="llm_judge")
+        del record["verifier"]["judge_config"]
+        err = _invalid(run_record_schema, record)
+        assert "judge_config" in str(err).lower()
+
+    def test_llm_judge_judge_config_missing_pinned_fields_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # judge_config must pin model/prompt/params/seed.
+        record = _valid_run_record(verifier="llm_judge")
+        del record["verifier"]["judge_config"]["judge_seed"]
+        err = _invalid(run_record_schema, record)
+        assert "judge_seed" in str(err).lower()
+
+    def test_missing_task_type_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # benchmark.task_type is the discriminator for raw-output preservation;
+        # a run record without it must be rejected so the conditional cannot
+        # be bypassed.
+        record = _valid_run_record(task_type="text")
+        del record["benchmark"]["task_type"]
+        err = _invalid(run_record_schema, record)
+        assert "task_type" in str(err).lower()
+
+    def test_text_result_with_null_observed_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # For text runs, observed must be a non-null string; a null observed
+        # would let the raw-output preservation requirement be bypassed.
+        record = _valid_run_record(task_type="text")
+        record["cases"][0]["observed"] = None
+        err = _invalid(run_record_schema, record)
+        assert "observed" in str(err).lower()
+
+    def test_text_result_with_non_string_observed_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # For text runs, observed must be a string (not a number/object/null).
+        record = _valid_run_record(task_type="text")
+        record["cases"][0]["observed"] = 42
+        err = _invalid(run_record_schema, record)
+        assert "observed" in str(err).lower()
+
 
 # === Failure-store schema ===================================================
 
@@ -866,6 +935,67 @@ class TestTypedContractDrift:
                 n_fail=0,
             ),
             verifier=T.RunVerifier(name="state_check", version="1.0.0"),
+            tag_filter="smoke",
+        )
+        _validate(run_record_schema, _dataclass_to_dict(record))
+
+    def test_run_record_dataclass_validates_llm_judge_with_judge_config(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # An llm_judge run verifier must carry a pinned RunJudgeConfig that
+        # serializes into the schema's verifier.judge_config block.
+        record = T.RunRecord(
+            schema_version="1",
+            run_id="run-0003",
+            benchmark=T.BenchmarkRef(
+                id="llm-judged-bench",
+                version="0.1.0",
+                task_type="text",
+                domain="recreation",
+                tags=("recreation",),
+                status="experimental",
+            ),
+            model=T.ModelRef(id="stub", adapter="stub"),
+            prompt=T.RunPrompt(version="0.1.0", template="Describe: {input}"),
+            sampling_params={"temperature": 0.0, "max_tokens": 16},
+            seed=0,
+            fixture_version="0.1.0",
+            manifest_version="0.1.0",
+            environment_hash="sha256:deadbeefdeadbeef",
+            metric_params={},
+            cases=(
+                T.CaseResult(
+                    case_id="case-1",
+                    verdict="pass",
+                    score=1.0,
+                    expected="knoll",
+                    observed="knoll",
+                    error=None,
+                ),
+            ),
+            aggregate=T.AggregateScore(
+                metric="llm_judge",
+                value=1.0,
+                n_cases=1,
+                n_pass=1,
+                n_fail=0,
+            ),
+            environment=T.RunEnvironment(
+                sandbox_backend="in-process",
+                python="3.11",
+                os="linux",
+                runner_version="0.1.0",
+            ),
+            verifier=T.RunVerifier(
+                name="llm_judge",
+                version="1.0.0",
+                judge_config=T.RunJudgeConfig(
+                    judge_model="pinned-judge",
+                    judge_prompt="Is this correct?",
+                    judge_seed=1,
+                    judge_params={"temperature": 0.0},
+                ),
+            ),
             tag_filter="smoke",
         )
         _validate(run_record_schema, _dataclass_to_dict(record))

@@ -46,7 +46,7 @@
       "type": "object",
       "description": "Benchmark identity and metadata captured at run time.",
       "additionalProperties": false,
-      "required": ["id", "version"],
+      "required": ["id", "version", "task_type"],
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "version": { "type": "string", "minLength": 1, "maxLength": 32 },
@@ -132,7 +132,19 @@
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "enum": ["exact_match", "contains_any", "regex_match", "set_f1", "state_check", "llm_judge"] },
-        "version": { "type": "string", "maxLength": 32 }
+        "version": { "type": "string", "maxLength": 32 },
+        "judge_config": {
+          "type": "object",
+          "description": "Pinned LLM-judge configuration in effect for the run. Required when verifier.name is llm_judge; the judge model, prompt, params, and seed must be pinned for reproducibility.",
+          "additionalProperties": false,
+          "required": ["judge_model", "judge_prompt", "judge_params", "judge_seed"],
+          "properties": {
+            "judge_model": { "type": "string", "minLength": 1 },
+            "judge_prompt": { "type": "string", "minLength": 1 },
+            "judge_params": { "type": "object", "additionalProperties": true },
+            "judge_seed": { "type": ["string", "integer"] }
+          }
+        }
       }
     },
     "tag_filter": {
@@ -178,7 +190,10 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["observed"]
+              "required": ["observed"],
+              "properties": {
+                "observed": { "type": "string", "minLength": 1 }
+              }
             }
           }
         }
@@ -217,6 +232,23 @@
               "required": ["transcript", "final_repo_state"]
             }
           }
+        }
+      }
+    },
+    {
+      "description": "An llm_judge run verifier must pin judge metadata (model, prompt, params, seed) in judge_config so the run-record cannot validate without a reproducible judge configuration.",
+      "if": {
+        "properties": {
+          "verifier": {
+            "properties": { "name": { "const": "llm_judge" } },
+            "required": ["name"]
+          }
+        },
+        "required": ["verifier"]
+      },
+      "then": {
+        "properties": {
+          "verifier": { "required": ["judge_config"] }
         }
       }
     }

@@ -51,6 +51,7 @@ __all__ = [
     "RunPrompt",
     "RunEnvironment",
     "RunVerifier",
+    "RunJudgeConfig",
     "FailureRecord",
     "FailureStore",
     "RunRecordRef",
@@ -250,11 +251,16 @@ class CaseDefinition:
 
 @dataclass(frozen=True)
 class BenchmarkRef:
-    """Benchmark identity captured at run time."""
+    """Benchmark identity captured at run time.
+
+    ``task_type`` is required: the run-record schema requires it as the
+    discriminator that selects per-case raw-output preservation (text
+    ``observed`` vs tool-task ``transcript``/``final_repo_state``).
+    """
 
     id: str
     version: str
-    task_type: TaskType | None = None
+    task_type: TaskType
     domain: str | None = None
     tags: Sequence[str] = ()
     status: BenchmarkStatus | None = None
@@ -290,11 +296,31 @@ class RunEnvironment:
 
 
 @dataclass(frozen=True)
+class RunJudgeConfig:
+    """Pinned LLM-judge configuration in effect for a run.
+
+    Mirrors ``judge_config`` in the run-record schema's verifier block.
+    Required when the run verifier is ``llm_judge``.
+    """
+
+    judge_model: str
+    judge_prompt: str
+    judge_seed: str | int
+    judge_params: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RunVerifier:
-    """Verifier configuration in effect for a run."""
+    """Verifier configuration in effect for a run.
+
+    ``judge_config`` is required by the run-record schema when ``name`` is
+    ``llm_judge``; it pins the judge model/prompt/params/seed for
+    reproducibility.
+    """
 
     name: VerifierName | None = None
     version: str | None = None
+    judge_config: RunJudgeConfig | None = None
 
 
 @dataclass(frozen=True)
