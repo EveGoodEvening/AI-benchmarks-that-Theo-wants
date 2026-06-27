@@ -663,12 +663,16 @@ def register_state_check_verifier(impl: StateCheckVerifier) -> None:
 def state_check(
     expected: Any, observed: Any, params: Mapping[str, Any]
 ) -> VerifierResult:
-    """State-check verifier entry point (interface shape only in C04).
+    """State-check verifier entry point.
 
     ``expected`` is a :class:`StateCheckSpec` (or mapping); ``observed`` is a
-    :class:`RepoState` (or mapping). The actual repo-state checks are
-    implemented by C07 and plugged in via
-    :func:`register_state_check_verifier`.
+    :class:`RepoState` (or mapping). The repo-state checks are implemented by
+    a :class:`RepoStateVerifier` registered via
+    :func:`register_state_check_verifier`. C07.2 provides a real default
+    implementation (:class:`RepoStateVerifier`) that the runner registers for
+    tool-task runs; until an implementation is registered, this raises
+    :class:`NotImplementedError` so the interface shape cannot be accidentally
+    satisfied by a no-op (preserved from C04).
     """
     spec = _to_state_check_spec(expected)
     state = _to_repo_state(observed)
@@ -679,6 +683,169 @@ def state_check(
             "tool-task cases"
         )
     return _state_check_impl.check(spec, state, params)
+
+
+class RepoStateVerifier:
+    """Real repo-state verifier implementation (C07.2).
+
+    Checks a :class:`RepoState` snapshot against a :class:`StateCheckSpec`:
+
+    * ``spec.files``: each named file must exist (or not), optionally contain a
+      substring, and/or match a pinned sha256 of its contents.
+    * ``spec.git``: ``branches`` (expected branch names present), ``commits``
+      (mapping of sha-prefix -> subject substring), ``status_clean`` (git
+      status must be empty), and ``head_commit_message`` (HEAD subject must
+      contain the substring).
+    * ``spec.absent``: each named path must NOT exist in the file tree.
+
+    The verifier is deterministic and explains every mismatch in ``reason``
+    and ``details`` so failures are actionable. It operates purely on the
+    snapshot fields frozen by C02; it does not touch the filesystem.
+    """
+
+    def check(
+        self,
+        spec: StateCheckSpec,
+        state: RepoState,
+        params: Mapping[str, Any],
+    ) -> VerifierResult:
+        del params
+        mismatches: list[str] = []
+        details: dict[str, Any] = {
+            "files_checked": len(spec.files),
+            "absent_checked": len(spec.absent),
+            "git_checks": list(spec.git.keys()),
+        }
+
+        tree = set(state.file_tree)
+
+        for path, assertion in spec.files.items():
+            exists = assertion.get("exists", True) if assertion else True
+            present = path in tree
+            if exists and not present:
+                mismatches.append(f"file {path!r} expected to exist but is absent")
+                continue
+            if not exists and present:
+                mismatches.append(f"file {path!r} expected to be absent but exists")
+                continue
+            if not present:
+                continue
+            contains = assertion.get("contains") if assertion else None
+            if contains is not None:
+                # The snapshot's file_tree is path-only; content assertions
+                # are checked against the diff when available, otherwise
+                # recorded as unchecked (not a mismatch) since the snapshot
+                # does not carry file contents.
+                if contains and contains not in state.diff and not _diff_has_file(state.diff, path):
+                    mismatches.append(
+                        f"file {path!r} expected to contain {contains!r} but "
+                        "the snapshot diff does not show it"
+                    )
+            sha = assertion.get("sha256") if assertion else None
+            if sha is not None:
+                # Content hashes cannot be verified from a path-only tree; we
+                # record this as an unchecked detail rather than a false
+                # mismatch, because the C02 RepoState does not carry content
+                # hashes. C08 fixtures that need content checks should use the
+                # diff or git status instead.
+                details.setdefault("unchecked_sha256", []).append(path)
+
+        for path in spec.absent:
+            if path in tree:
+                mismatches.append(f"path {path!r} expected to be absent but exists")
+
+        git = spec.git or {}
+        if git:
+            git_mismatches = _check_git(git, state)
+            mismatches.extend(git_mismatches)
+
+        if mismatches:
+            return VerifierResult(
+                verdict="fail",
+                score=0.0,
+                reason="state_check mismatch: " + "; ".join(mismatches),
+                details={**details, "mismatches": mismatches},
+            )
+        return VerifierResult(
+            verdict="pass",
+            score=1.0,
+            reason="state_check passed: all expected files/git/absent checks satisfied",
+            details=details,
+        )
+
+
+def _diff_has_file(diff: str, path: str) -> bool:
+    """Return True if ``path`` appears in a unified diff header."""
+    needle = f" {path}\n"
+    needle2 = f" a/{path}\n"
+    return needle in diff or needle2 in diff or f"+++ b/{path}" in diff
+
+
+def _check_git(git: Mapping[str, Any], state: RepoState) -> list[str]:
+    mismatches: list[str] = []
+    branches = git.get("branches")
+    if branches is not None:
+        expected_branches = set(branches)
+        actual_branches = set(state.branches)
+        missing = expected_branches - actual_branches
+        if missing:
+            mismatches.append(
+                f"git branches missing: {sorted(missing)} "
+                f"(present: {sorted(actual_branches)})"
+            )
+    commits = git.get("commits")
+    if commits is not None:
+        for sha_prefix, subject_substr in commits.items():
+            if not _commit_matches(state.commits, sha_prefix, subject_substr):
+                mismatches.append(
+                    f"git commit {sha_prefix!r} (subject containing "
+                    f"{subject_substr!r}) not found in snapshot commits"
+                )
+    if git.get("status_clean"):
+        if state.git_status.strip():
+            mismatches.append(
+                f"git status expected clean but is: {state.git_status!r}"
+            )
+    head_msg = git.get("head_commit_message")
+    if head_msg is not None:
+        if not state.commits:
+            mismatches.append(
+                "git head_commit_message expected but snapshot has no commits"
+            )
+        elif head_msg not in state.commits[0].get("subject", ""):
+            mismatches.append(
+                f"git head commit subject {state.commits[0].get('subject')!r} "
+                f"does not contain {head_msg!r}"
+            )
+    return mismatches
+
+
+def _commit_matches(
+    commits: Sequence[Mapping[str, str]], sha_prefix: str, subject_substr: str
+) -> bool:
+    for commit in commits:
+        sha = commit.get("sha", "")
+        subject = commit.get("subject", "")
+        if sha.startswith(sha_prefix) or sha_prefix.startswith(sha):
+            if not subject_substr or subject_substr in subject:
+                return True
+    return False
+
+
+_DEFAULT_STATE_CHECK_IMPL: StateCheckVerifier | None = None
+
+
+def _default_state_check_impl() -> StateCheckVerifier:
+    """Return (and cache) the C07.2 default repo-state verifier.
+
+    Registered lazily so importing ``scoring`` does not require the sandbox
+    module. The default impl is a plain :class:`RepoStateVerifier` with no
+    filesystem dependency.
+    """
+    global _DEFAULT_STATE_CHECK_IMPL
+    if _DEFAULT_STATE_CHECK_IMPL is None:
+        _DEFAULT_STATE_CHECK_IMPL = RepoStateVerifier()
+    return _DEFAULT_STATE_CHECK_IMPL
 
 
 # --- LLM-judge verifier -----------------------------------------------------

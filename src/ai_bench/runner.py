@@ -1,9 +1,11 @@
 """Benchmark runner, offline prediction/replay paths, and run-record emission.
 
 Chunk C05 wires together the C03 loader, C04 scoring engine, C05 model/agent
-adapter contracts, and C02 run-record schema validation.  It deliberately does
-not implement real benchmarks, an enforced sandbox backend, a real state-check
-verifier, or failure-store persistence.
+adapter contracts, and C02 run-record schema validation.  C07 plugs the
+enforced sandboxed dispatcher (from ``ai_bench.sandbox``) into the C05
+agent-adapter contract and hands the final repo-state snapshot to the real
+state-check verifier implemented in C07.2.  The runner does not implement
+real benchmarks or failure-store persistence.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from ai_bench import loader as L
 from ai_bench import models as M
 from ai_bench import run_records as RR
+from ai_bench import sandbox as SB
 from ai_bench import scoring as S
 from ai_bench import types as T
 
@@ -338,7 +341,7 @@ def _run_tool_cases(
                 "C05 has no live agent adapters; use --model stub or --replay"
             )
         adapter = M.StubAgent()
-    active_dispatcher = dispatcher or M.StubCommandDispatcher()
+    active_dispatcher = dispatcher or SB.select_dispatcher()
     observed_by_id: dict[str, T.RepoState] = {}
     transcripts: dict[str, tuple[T.ToolAction, ...]] = {}
     for case, prompt in zip(cases, prompts, strict=True):
@@ -702,7 +705,11 @@ def _state_check_impl(
         return explicit
     if _uses_c05_stub_state_check(manifest, cases):
         return C05StubStateCheckVerifier()
-    return None
+    # C07.2: register the real repo-state verifier for tool-task cases that
+    # do not opt into the C05 fake. This is the real-verifier acceptance that
+    # C05 deliberately deferred; the verifier operates on the C02 RepoState
+    # snapshot and does not touch the sandbox.
+    return S.RepoStateVerifier()
 
 
 def _uses_c05_stub_state_check(

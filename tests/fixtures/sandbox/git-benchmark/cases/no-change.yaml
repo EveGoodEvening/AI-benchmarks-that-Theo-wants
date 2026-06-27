@@ -1,0 +1,21 @@
+schema_version: "1"
+id: no-change
+input:
+  prompt: "Run a harmless git status and make no changes."
+  fixture: "fixtures/repo"
+  script:
+    - command: git
+      argv: ["status", "--short"]
+      cwd: "."
+expected: "state-check-stub"
+tags:
+  - smoke
+difficulty: easy
+provenance:
+  source: original
+  license: MIT
+state_check:
+  git:
+    status_clean: true
+  absent:
+    - notes.md

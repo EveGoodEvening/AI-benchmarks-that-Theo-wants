@@ -1,0 +1,34 @@
+schema_version: "1"
+id: create-commit
+input:
+  prompt: "Create a git commit inside the sandbox that adds notes.md."
+  fixture: "fixtures/repo"
+  script:
+    - command: git
+      argv: ["status", "--short"]
+      cwd: "."
+    - command: file.write
+      argv: ["notes.md", "sandbox commit\n"]
+      cwd: "."
+    - command: git
+      argv: ["add", "notes.md"]
+      cwd: "."
+    - command: git
+      argv: ["commit", "-m", "add notes"]
+      cwd: "."
+expected: "state-check-stub"
+tags:
+  - smoke
+difficulty: easy
+provenance:
+  source: original
+  license: MIT
+state_check:
+  files:
+    notes.md:
+      exists: true
+  git:
+    status_clean: true
+    head_commit_message: "add notes"
+  absent:
+    - secret.txt

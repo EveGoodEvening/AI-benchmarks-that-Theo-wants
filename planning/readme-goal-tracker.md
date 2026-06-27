@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: C01, C02, C03, C04, C05, and C06 implemented and verified; C07-C13 not started.
+Implementation state: C01, C02, C03, C04, C05, C06, and C07 implemented and verified; C08-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -168,7 +168,7 @@ A future session may run chunks in parallel only when they do not touch the same
   - [x] Run and record verification commands.
 - Verification evidence (C06): Orchestrator verification passed. `uv run ai-bench validate benchmarks/description-label` -> OK, cases=25 smoke=4. `uv run ai-bench run benchmarks/description-label --model stub -o /tmp/c06-stub.json` -> exited 0, cases=25, pass=0, fail=25 (low-score completed run still exits 0 by C05 contract; failed verdicts are evaluation data, not process failures). `uv run ai-bench run benchmarks/description-label --tag smoke --model stub -o /tmp/c06-smoke.json` -> exited 0, cases=4, pass=0, fail=4 (`--tag smoke` covers only the 4 `smoke`-tagged cases). `uv run ai-bench run benchmarks/description-label --predictions benchmarks/description-label/sample_predictions -o /tmp/c06-pred.json` -> exited 0, cases=25, pass=24, fail=1, schema-valid run record (non-stub offline scoring path: checked-in real text predictions scored by real C04 verifiers, no stub/live model). `uv run ai-bench validate` (no-arg, validate-all) -> OK, description-label cases=25 smoke=4, all 1 benchmark valid. `uv run pytest tests/test_description_label_benchmark.py -q` -> 7 passed. `uv run pytest -q` -> 321 passed, 1 skipped (full suite, no regressions). Coverage spans: manifest populating `tags`/`status` per C02 schema; 25 original description-to-label cases (within the 20-50 review range) with unambiguous expected answers and contributor/license/provenance metadata; 4 `smoke`-tagged cases selected exclusively by `--tag smoke`; benchmark README with limitations and non-endorsement language; checked-in non-stub prediction sample scored by the real C04 verifiers producing a schema-valid run-record (exercising the C05 CI-safe non-stub `--predictions` path); run-command exit status recorded separately from case pass rate per C05 semantics (exit 0 with failed verdicts is acceptable evaluation evidence; non-zero exits would block C06). All seven C06 tasks are satisfied and verified; C06 checked. C01-C05 remain checked; C07+ remain unchecked (C07 code exists but is left unchecked for a separate tracker update; C08+ unchecked).
 
-### [ ] C07 — Hermetic sandbox + sandboxed dispatch + repo-state verifier
+### [x] C07 — Hermetic sandbox + sandboxed dispatch + repo-state verifier
 
 - Conventional Commit candidate: `feat(sandbox): add hermetic sandboxed task execution and repo-state verifier`
 - Owned files/scope: `src/ai_bench/sandbox.py` (sandbox, sandboxed command dispatcher, security policy, repo-state snapshot), state-check verifier implementation in `src/ai_bench/scoring.py` (interface shape from C04), runner integration in `src/ai_bench/runner.py` only to plug the dispatcher into the C05 agent-adapter contract, `tests/fixtures/sandbox/**`, `tests/test_sandbox.py` (C07.1), `tests/test_sandbox_integration.py` (C07.2), `tests/test_sandbox_hardening.py` (C07.3). C07 must not edit `src/ai_bench/models.py` or `src/ai_bench/run_records.py`.
@@ -178,35 +178,36 @@ A future session may run chunks in parallel only when they do not touch the same
 - Review criteria: host repo cannot be mutated (verified by host-tree hash before/after); reliable cleanup; useful mismatch diagnostics; sandbox backend is concrete and enforced (bubblewrap/namespace backend on Linux, or in-process allowlisted dispatcher fallback), not a plain temp working tree; backend selection explicit and recorded; security posture enforced not just documented (no broad host mounts, no unchecked path joins, no execution outside sandbox, no outbound network, no inherited credentials, timeouts/resource limits applied, every violation recorded); sandboxed dispatcher satisfies the C05 agent-adapter contract; C07 did not edit `models.py` or `run_records.py`; C07 is not checked until all three ordered sub-phases (C07.1, C07.2, C07.3) are individually checked.
 - Tasks (ordered sub-phases; C07 is not checked until all three are checked):
 
-  #### [ ] C07.1 — Sandbox backend + sandboxed dispatcher confinement
+  #### [x] C07.1 — Sandbox backend + sandboxed dispatcher confinement
 
-  - [ ] Implement concrete enforced sandbox backend: primary bubblewrap (`bwrap`) on Linux with user + mount + network namespaces + seccomp, empty network namespace, private mount table; fallback in-process allowlisted operation dispatcher (no shell, no arbitrary subprocess) when `bwrap` is unavailable or host is non-Linux. Plain temp working tree is NOT sufficient; temp dirs are storage inside the boundary only.
-  - [ ] Document host prerequisites and fallbacks; record active backend in run-record environment hash.
-  - [ ] Implement read-only fixture mounting/copying strategy.
-  - [ ] Implement sandboxed command dispatcher (C05 contract): working-directory/path/host-boundary confinement, record exit code/stdout/stderr/duration/timeout/boundary-violation per C02/C05 transcript fields; absolute paths and symlink escapes outside the sandbox root are rejected and recorded.
-  - [ ] Add no-host-mutation assertions (host-tree hash before/after) and cleanup-on-failure coverage.
-  - [ ] Run and record C07.1 verification (`uv run pytest tests/test_sandbox.py -q`).
+  - [x] Implement concrete enforced sandbox backend: primary bubblewrap (`bwrap`) on Linux with user + mount + network namespaces + seccomp, empty network namespace, private mount table; fallback in-process allowlisted operation dispatcher (no shell, no arbitrary subprocess) when `bwrap` is unavailable or host is non-Linux. Plain temp working tree is NOT sufficient; temp dirs are storage inside the boundary only.
+  - [x] Document host prerequisites and fallbacks; record active backend in run-record environment hash.
+  - [x] Implement read-only fixture mounting/copying strategy.
+  - [x] Implement sandboxed command dispatcher (C05 contract): working-directory/path/host-boundary confinement, record exit code/stdout/stderr/duration/timeout/boundary-violation per C02/C05 transcript fields; absolute paths and symlink escapes outside the sandbox root are rejected and recorded.
+  - [x] Add no-host-mutation assertions (host-tree hash before/after) and cleanup-on-failure coverage.
+  - [x] Run and record C07.1 verification (`uv run pytest tests/test_sandbox.py -q`).
 
-  #### [ ] C07.2 — Repo-state verifier integration
+  #### [x] C07.2 — Repo-state verifier integration
 
-  - [ ] Implement repo-state verifier primitives receiving final sandbox state from runner (interface shape from C04). This is the real state-check verifier implementation that the C05 `--replay` plumbing hands transcripts/snapshots to; until C07.2 lands, C05's `--replay` is tested only against a fake/stub state-check verifier.
-  - [ ] Plug sandboxed dispatcher into the C05 agent-adapter contract in `src/ai_bench/runner.py` only; hand final repo-state snapshot to the state-check verifier. Do not edit `models.py` or `run_records.py`.
-  - [ ] Add integration test: stub agent performs a git task inside the sandbox, state-check verifier observes pass and fail paths; host repository byte-identical before and after.
-  - [ ] Add real-verifier transcript-replay acceptance test: `ai-bench run <benchmark> --replay <fixture-transcript-dir>` replays a small fixture of submitted agent/tool-action transcripts (with final repo-state snapshots) through the now-implemented real state-check verifier (C05 `--replay` plumbing wired to the C07.2 verifier), writes a validated run-record, no API key/network/host mutation. This is the real-verifier transcript-replay acceptance deferred from C05; it is owned here and exercised end-to-end with checked-in `--replay` samples in C08/C11/C12.
-  - [ ] Run and record C07.2 verification (`uv run pytest tests/test_sandbox_integration.py -q`), including the real-verifier transcript-replay acceptance test passing.
+  - [x] Implement repo-state verifier primitives receiving final sandbox state from runner (interface shape from C04). This is the real state-check verifier implementation that the C05 `--replay` plumbing hands transcripts/snapshots to; until C07.2 lands, C05's `--replay` is tested only against a fake/stub state-check verifier.
+  - [x] Plug sandboxed dispatcher into the C05 agent-adapter contract in `src/ai_bench/runner.py` only; hand final repo-state snapshot to the state-check verifier. Do not edit `models.py` or `run_records.py`.
+  - [x] Add integration test: stub agent performs a git task inside the sandbox, state-check verifier observes pass and fail paths; host repository byte-identical before and after.
+  - [x] Add real-verifier transcript-replay acceptance test: `ai-bench run <benchmark> --replay <fixture-transcript-dir>` replays a small fixture of submitted agent/tool-action transcripts (with final repo-state snapshots) through the now-implemented real state-check verifier (C05 `--replay` plumbing wired to the C07.2 verifier), writes a validated run-record, no API key/network/host mutation. This is the real-verifier transcript-replay acceptance deferred from C05; it is owned here and exercised end-to-end with checked-in `--replay` samples in C08/C11/C12.
+  - [x] Run and record C07.2 verification (`uv run pytest tests/test_sandbox_integration.py -q`), including the real-verifier transcript-replay acceptance test passing.
 
-  #### [ ] C07.3 — Network/env/credential/resource-limit hardening
+  #### [x] C07.3 — Network/env/credential/resource-limit hardening
 
-  - [ ] Deny outbound network by default; record attempted network access as boundary violations.
-  - [ ] Clear/allowlist environment variables; strip credentials, tokens, SSH keys, cloud-provider env; prevent host `~/.gitconfig`, `~/.ssh`, `~/.aws`, credential helpers visibility.
-  - [ ] Enforce per-command timeouts and resource limits (CPU/wall-clock, process count, disk write where feasible).
-  - [ ] Add boundary-violation acceptance tests: absolute-path and symlink-escape read/write outside sandbox fail and are recorded.
-  - [ ] Add boundary-violation acceptance tests: git remote/network access (fetch/clone/push) fails and is recorded.
-  - [ ] Add boundary-violation acceptance tests: credential helpers / host gitconfig / SSH / cloud env access unavailable and attempts recorded.
-  - [ ] Add boundary-violation acceptance tests: subprocess/process-count/CPU/wall-clock limits enforced; spawning/long-running actions killed and recorded.
-  - [ ] Run and record C07.3 verification (`uv run pytest tests/test_sandbox_hardening.py -q`).
+  - [x] Deny outbound network by default; record attempted network access as boundary violations.
+  - [x] Clear/allowlist environment variables; strip credentials, tokens, SSH keys, cloud-provider env; prevent host `~/.gitconfig`, `~/.ssh`, `~/.aws`, credential helpers visibility.
+  - [x] Enforce per-command timeouts and resource limits (CPU/wall-clock, process count, disk write where feasible).
+  - [x] Add boundary-violation acceptance tests: absolute-path and symlink-escape read/write outside sandbox fail and are recorded.
+  - [x] Add boundary-violation acceptance tests: git remote/network access (fetch/clone/push) fails and is recorded.
+  - [x] Add boundary-violation acceptance tests: credential helpers / host gitconfig / SSH / cloud env access unavailable and attempts recorded.
+  - [x] Add boundary-violation acceptance tests: subprocess/process-count/CPU/wall-clock limits enforced; spawning/long-running actions killed and recorded.
+  - [x] Run and record C07.3 verification (`uv run pytest tests/test_sandbox_hardening.py -q`).
 
-- [ ] C07 overall: run and record the combined verification commands once C07.1, C07.2, and C07.3 are all checked.
+- [x] C07 overall: run and record the combined verification commands once C07.1, C07.2, and C07.3 are all checked.
+- Verification evidence (C07): Orchestrator verification passed. `uv run pytest tests/test_sandbox.py tests/test_sandbox_integration.py tests/test_sandbox_hardening.py -q` -> 61 passed, 1 skipped (combined C07.1/C07.2/C07.3 suite). `uv run ai-bench validate tests/fixtures/sandbox/git-benchmark` -> OK, cases=2 smoke=2 (sandbox fixture validates against C02/C03 loader+schema). `uv run ai-bench run tests/fixtures/sandbox/git-benchmark --tag smoke -o /tmp/c07-smoke.json` -> exited 0, cases=2, pass=2, fail=0 (stub agent executes git task inside the sandbox, state-check verifier observes pass path, schema-valid run-record written; host repository byte-identical before and after per C07 review criteria). `uv run pytest -q` -> 321 passed, 1 skipped (full suite, no regressions). Coverage spans: concrete enforced sandbox backend with in-process allowlisted operation dispatcher (C07.1) including working-directory/path/host-boundary confinement, transcript fields (exit code/stdout/stderr/duration/timeout/boundary-violation), absolute-path and symlink-escape rejection/recording, no-host-mutation host-tree hash assertions and cleanup-on-failure; repo-state verifier integration (C07.2) with real state-check verifier primitives wired into the C05 agent-adapter/run-record contract in `runner.py` only (no edits to `models.py`/`run_records.py`), integration test observing pass and fail paths with host byte-identity, and real-verifier transcript-replay acceptance (`--replay` plumbing handed to the now-implemented real verifier); network/env/credential/resource-limit hardening (C07.3) with outbound network denial, env/credential stripping (gitconfig/SSH/cloud), per-command timeouts and resource limits, and boundary-violation acceptance tests for path/symlink escapes, git remote/network access, credential helpers, and subprocess/process-count/CPU/wall-clock limits — every violation fails closed and is recorded in the run-record transcript. All three ordered sub-phases (C07.1, C07.2, C07.3) are individually checked and verified; C07 checked. C01-C06 remain checked; C08+ remain unchecked.
 
 ### [ ] C08 — Reference benchmark B: git tool-proficiency benchmark
 

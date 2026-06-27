@@ -1,0 +1,18 @@
+schema_version: "1"
+id: sandbox-git-c07
+name: Sandbox Git C07
+description: C07.2 integration fixture exercising the enforced sandboxed dispatcher and real state-check verifier.
+domain: tool-use
+task_type: tool-task
+metric:
+  verifier: state_check
+  params: {}
+version: "0.1.0"
+contributor:
+  name: tests
+license: MIT
+case_glob: "cases/*.yaml"
+tags:
+  - tool
+  - c07
+status: experimental
