@@ -1,11 +1,11 @@
-"""Smoke test for the C01 skeleton.
+"""Smoke test for the CLI surface.
 
-This only verifies the skeleton contract that C01 owns:
-  * the package imports and exposes a version,
-  * the CLI exposes a ``--help`` path and a ``--version`` path,
-  * placeholder subcommands report "not implemented yet" and exit non-zero.
-
-It deliberately does not test any benchmark behavior (none exists yet).
+Verifies the CLI contract across chunks:
+  * the package imports and exposes a version (C01),
+  * the CLI exposes a ``--help`` path and a ``--version`` path (C01),
+  * placeholder subcommands report "not implemented yet" and exit non-zero
+    (only ``failures`` remains a placeholder, owned by C09; ``validate`` is
+    implemented in C03 and ``run`` in C05).
 """
 
 from __future__ import annotations
@@ -41,9 +41,10 @@ def test_cli_version_flag_exits_zero(capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_cli_placeholder_subcommands_are_not_implemented(capsys: pytest.CaptureFixture[str]) -> None:
-    # validate is implemented in C03; run and failures remain placeholder
-    # stubs owned by later chunks (C05 and C09).
-    for name in ("run", "failures"):
+    # validate is implemented in C03; run is implemented in C05 (requires a
+    # benchmark argument, so it no longer reports "not implemented yet").
+    # failures remains a placeholder stub owned by C09.
+    for name in ("failures",):
         rc = cli.main([name])
         err = capsys.readouterr().err
         assert rc != 0

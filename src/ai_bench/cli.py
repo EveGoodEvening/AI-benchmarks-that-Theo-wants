@@ -1,9 +1,11 @@
 """CLI entry point for the ``ai-bench`` command.
 
 The ``ai-bench validate`` subcommand (both the ``<benchmark>`` and no-argument
-validate-all forms) is implemented in C03. The ``run`` and ``failures``
-subcommands remain placeholder stubs owned by later chunks (C05 and C09
-respectively); they are declared so the CLI surface stays stable.
+validate-all forms) is implemented in C03.  The ``ai-bench run`` subcommand is
+implemented in C05: it loads a benchmark, selects cases, evaluates via the
+stub/text-file/replay adapter paths, scores with the C04 verifiers, and writes
+a schema-valid run-record.  The ``failures`` subcommand remains a placeholder
+owned by C09.
 
 C03 validate behavior:
   * ``ai-bench validate <benchmark>`` loads a benchmark directory, validates
@@ -20,13 +22,14 @@ C03 validate behavior:
 """
 from __future__ import annotations
 
-from ai_bench import __version__
-from ai_bench import loader as L
-
 import argparse
 import sys
 from pathlib import Path
 from typing import Sequence
+
+from ai_bench import __version__
+from ai_bench import loader as L
+from ai_bench import runner as R
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -71,23 +74,58 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # Placeholder subcommands owned by later chunks:
-    #   run      -> C05 (runner + model/agent adapters + run-records)
-    #   failures -> C09 (failure-case preservation + retry + hard-set)
-    # They are declared now only so the CLI surface is stable; they do not
-    # claim later functionality exists.
-    for name, help_text in (
-        ("run", "Run a benchmark and record results (planned, not implemented yet)."),
-        ("failures", "Preserve and retry failure cases (planned, not implemented yet)."),
-    ):
-        sub = subparsers.add_parser(name, help=help_text)
-        # Keep argument surface minimal; later chunks own their own arguments.
-        sub.add_argument(
-            "--not-implemented",
-            action="store_true",
-            help=argparse.SUPPRESS,
-        )
+    # run: implemented in C05 (runner + adapters + run-records).
+    run = subparsers.add_parser(
+        "run",
+        help="Run a benchmark and write a schema-valid run-record.",
+        description=(
+            "Run selected benchmark cases, score them with the C04 verifier, "
+            "and write a C02 schema-valid run-record. Exit 0 means evaluation, "
+            "scoring, and run-record writing succeeded, even when case "
+            "verdicts fail."
+        ),
+    )
+    run.add_argument("benchmark", help="Path to the benchmark directory to run.")
+    run.add_argument(
+        "--model",
+        default="stub",
+        help="Model/adapter id. C05 supports 'stub' unless using --predictions/--replay.",
+    )
+    run.add_argument("--tag", default=None, help="Only run cases carrying this tag, e.g. smoke.")
+    run.add_argument("--seed", default=0, help="Seed pinned into the run-record.")
+    run.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Run-record JSON output path (default: run-records/<run-id>.json).",
+    )
+    offline = run.add_mutually_exclusive_group()
+    offline.add_argument(
+        "--predictions",
+        default=None,
+        help="Directory of per-case text prediction files (<case-id>.txt).",
+    )
+    offline.add_argument(
+        "--predictions-file",
+        default=None,
+        help="JSON/JSONL mapping case ids to text predictions.",
+    )
+    offline.add_argument(
+        "--replay",
+        default=None,
+        help="Directory of per-case tool-action transcripts for tool-task replay.",
+    )
 
+    # failures: placeholder owned by C09.
+    failures = subparsers.add_parser(
+        "failures",
+        help="Preserve and retry failure cases (planned, not implemented yet).",
+    )
+    failures.add_argument(
+        "--not-implemented",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -217,6 +255,33 @@ def _cmd_validate_all() -> int:
     return 1
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Implement ``ai-bench run`` with C05 process-exit semantics."""
+    try:
+        result = R.run_benchmark(
+            args.benchmark,
+            tag=args.tag,
+            model=args.model,
+            seed=args.seed,
+            output=args.output,
+            predictions=args.predictions,
+            predictions_file=args.predictions_file,
+            replay=args.replay,
+        )
+    except R.RunnerError as exc:
+        print(f"ai-bench: run failed: {exc}", file=sys.stderr)
+        return 1
+
+    aggregate = result.record["aggregate"]
+    print(
+        "OK: run "
+        f"{result.record['run_id']} benchmark={result.record['benchmark']['id']} "
+        f"cases={aggregate['n_cases']} pass={aggregate.get('n_pass', 0)} "
+        f"fail={aggregate.get('n_fail', 0)} record={result.path}"
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -229,8 +294,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "validate":
         return _cmd_validate(args.benchmark)
+    if args.command == "run":
+        return _cmd_run(args)
 
-    # run / failures remain placeholder stubs owned by later chunks.
+    # failures remains a placeholder stub owned by C09.
     print(
         f"ai-bench: '{args.command}' is not implemented yet.",
         file=sys.stderr,
