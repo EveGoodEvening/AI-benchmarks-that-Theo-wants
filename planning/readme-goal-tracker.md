@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: C01 implemented and verified; C02-C13 not started.
+Implementation state: C01 and C02 implemented and verified; C03-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -57,7 +57,7 @@ A future session may run chunks in parallel only when they do not touch the same
   - [x] Run and record verification commands.
 - Verification evidence (C01): `uv sync` -> Checked 13 packages; `uv run ai-bench --help` -> usage printed, `ai-bench` entry point resolves (`validate`/`run`/`failures` subcommands present, planned); `uv run pytest -q` -> 5 passed. Python 3.11+ uv project; runtime deps limited to pyyaml + jsonschema (no heavy ML stack); `ai-bench` console script stable; `.gitignore` excludes caches/build output.
 
-### [ ] C02 — Schemas + typed contracts
+### [x] C02 — Schemas + typed contracts
 
 - Conventional Commit candidate: `feat(schema): define benchmark, case, run-record, and failure-store contracts`
 - Owned files/scope: `schemas/benchmark.schema.json`, `schemas/case.schema.json`, `schemas/run-record.schema.json`, `schemas/failure-store.schema.json`, `src/ai_bench/types.py`, `tests/test_schema.py`.
@@ -66,13 +66,14 @@ A future session may run chunks in parallel only when they do not touch the same
 - Verification: `uv run pytest tests/test_schema.py -q`.
 - Review criteria: required identity/provenance/license fields; benchmark `tags`/`status` (experimental|stable) fields; reserved case `smoke` tag; verifier types express README scope; run-record schema includes tool-action transcript + final repo-state fields; failure-store schema includes the full reproducibility determinant set; schema and runtime types cannot drift silently; no real benchmark fixtures except test fixtures; schema freeze is explicitly v1-scoped (C01-C12) and C13 owns post-v1 schema evolution via a versioned migration plan with compatibility tests.
 - Tasks:
-  - [ ] Define benchmark manifest schema, including benchmark-level `tags` and `status` (enum: `experimental` | `stable`, default `experimental`).
-  - [ ] Define case schema, including provenance, nullable expected only for failure cases, and the reserved `smoke` tag value.
-  - [ ] Define run-record schema with pinned reproducibility fields, plus v1 tool-action transcript fields (command, argv, cwd, env_overrides, stdin, exit_code, stdout, stderr, wall_clock_ms, timeout, sandbox_boundary_violation) and final repo-state snapshot block.
-  - [ ] Define failure-store schema (v1) with the full reproducibility determinant set and preserved failure-case fields.
-  - [ ] Add typed contracts or generated equivalents.
-  - [ ] Add schema acceptance/rejection tests (including `status` enum, `smoke` tag, transcript fields, failure-store determinant set).
-  - [ ] Run and record verification command.
+  - [x] Define benchmark manifest schema, including benchmark-level `tags` and `status` (enum: `experimental` | `stable`, default `experimental`).
+  - [x] Define case schema, including provenance, nullable expected only for failure cases, and the reserved `smoke` tag value.
+  - [x] Define run-record schema with pinned reproducibility fields, plus v1 tool-action transcript fields (command, argv, cwd, env_overrides, stdin, exit_code, stdout, stderr, wall_clock_ms, timeout, sandbox_boundary_violation) and final repo-state snapshot block.
+  - [x] Define failure-store schema (v1) with the full reproducibility determinant set and preserved failure-case fields.
+  - [x] Add typed contracts or generated equivalents.
+  - [x] Add schema acceptance/rejection tests (including `status` enum, `smoke` tag, transcript fields, failure-store determinant set).
+  - [x] Run and record verification command.
+- Verification evidence (C02): `uv run pytest tests/test_schema.py -q` -> 49 passed (acceptance/rejection across benchmark, case, run-record, failure-store schemas + typed-contract drift guards + schema-freeze v1 pin). `uv run pytest -q` -> 54 passed (full suite, no regressions). `schemas/benchmark.schema.json` pins `schema_version` const "1", requires identity/provenance/license fields, defines `tags` (unique string array) and `status` enum `experimental|stable` with default `experimental`, and enumerates all six v1 verifier types. `schemas/case.schema.json` defines `provenance`, nullable `expected` gated by an allOf rule requiring `expected_metadata.reason` when null, and accepts the reserved `smoke` tag. `schemas/run-record.schema.json` requires the pinned reproducibility determinant fields and freezes the `tool_action` transcript (command, argv, cwd, env_overrides, stdin, exit_code, stdout, stderr, wall_clock_ms, timeout, sandbox_boundary_violation) plus the `repo_state` final-snapshot block. `schemas/failure-store.schema.json` requires the full determinant set (benchmark/case id, manifest/fixture/prompt version, model id, sampling params, seed, verifier version, metric params, environment hash, run_record_ref) and constrains `verifier_verdict.verdict` to `fail`. `src/ai_bench/types.py` mirrors all four schemas as frozen dataclasses with `SCHEMA_VERSION == "1"`; `TestTypedContractDrift` builds representative instances and validates them against the schemas, preventing silent drift. No real benchmark fixtures added; only minimal test fixtures. Schema freeze is v1-scoped (C01-C12) with C13 owning post-v1 evolution.
 
 ### [ ] C03 — Loader + validator + discovery + minimal validate CLI
 

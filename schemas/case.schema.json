@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-bench.local/schemas/case.schema.json",
+  "title": "Benchmark case",
+  "description": "A single benchmark case. Frozen by chunk C02 for v1 chunks C01-C12; post-v1 schema evolution is owned by C13 via a versioned migration plan, not by in-flight edits to this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "input"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version this case conforms to. v1 uses '1'.",
+      "const": "1"
+    },
+    "id": {
+      "type": "string",
+      "description": "Stable case identifier unique within its benchmark.",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "input": {
+      "description": "Task input. For text benchmarks a string or structured prompt object; for tool-task benchmarks a fixture descriptor.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "prompt": { "type": "string" },
+            "fixture": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "expected": {
+      "description": "Expected value for verification. Permitted to be null ONLY for preserved failure cases (which must carry explicit metadata via expected_metadata). Otherwise required and non-null.",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "array", "items": {} },
+        { "type": "object", "additionalProperties": true }
+      ]
+    },
+    "expected_metadata": {
+      "type": "object",
+      "description": "Required when expected is null (preserved failure case). Carries the explicit metadata justifying a null expected value.",
+      "additionalProperties": true,
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Why expected is null, e.g. 'preserved_failure_case'.",
+          "minLength": 1
+        },
+        "source_run_record": {
+          "type": "string",
+          "description": "Reference to the run-record this failure case was preserved from."
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "description": "Case-level tags. The 'smoke' value is reserved: cases tagged 'smoke' belong to the benchmark's smoke subset selected by --tag smoke.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z0-9][a-z0-9_-]*$"
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "difficulty": {
+      "type": "string",
+      "description": "Optional difficulty label.",
+      "enum": ["trivial", "easy", "medium", "hard", "expert"],
+      "default": "medium"
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Origin/licensing metadata for this case.",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Origin description, e.g. 'original' or a citation.",
+          "maxLength": 256
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "description": "Per-case verifier override. When present, overrides the benchmark-level metric for this case.",
+      "additionalProperties": false,
+      "required": ["verifier"],
+      "properties": {
+        "verifier": {
+          "type": "string",
+          "enum": [
+            "exact_match",
+            "contains_any",
+            "regex_match",
+            "set_f1",
+            "state_check",
+            "llm_judge"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "state_check": {
+      "type": "object",
+      "description": "Expected repository state for state_check verifier (tool-task benchmarks). Consumed by the state-check verifier implemented in C07.2.",
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "object",
+          "description": "Expected file paths -> optional content assertions.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "exists": { "type": "boolean" },
+              "contains": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "branches": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "commits": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "status_clean": { "type": "boolean" },
+            "head_commit_message": { "type": "string" }
+          }
+        },
+        "absent": {
+          "type": "array",
+          "description": "Paths that must NOT exist.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "llm_judge": {
+      "type": "object",
+      "description": "Pinned LLM-judge configuration. Required when verifier is llm_judge; the judge model, prompt, params, and seed must be pinned for reproducibility.",
+      "additionalProperties": false,
+      "required": ["judge_model", "judge_prompt", "judge_params", "judge_seed"],
+      "properties": {
+        "judge_model": { "type": "string", "minLength": 1 },
+        "judge_prompt": { "type": "string", "minLength": 1 },
+        "judge_params": { "type": "object", "additionalProperties": true },
+        "judge_seed": { "type": ["string", "integer"] }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form notes for maintainers."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "expected": { "type": "null" } },
+        "required": ["expected"]
+      },
+      "then": {
+        "required": ["expected_metadata"],
+        "properties": {
+          "expected_metadata": {
+            "type": "object",
+            "required": ["reason"],
+            "properties": {
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

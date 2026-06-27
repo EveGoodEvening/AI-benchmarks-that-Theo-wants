@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-bench.local/schemas/failure-store.schema.json",
+  "title": "Failure store",
+  "description": "Versioned store of preserved benchmark failure cases. Frozen by chunk C02 for v1 chunks C01-C12; post-v1 schema evolution is owned by C13 via a versioned migration plan, not by in-flight edits to this file. C09 consumes this schema without adding schema files. Deduplication is keyed by the full reproducibility determinant set: benchmark/case id, manifest/fixture version, prompt or prompt-template version, model id, sampling params, seed, verifier/scorer version or metric params, and environment hash. Task/model/params/fixture-version alone is insufficient.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "storage_version", "failures"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version this store conforms to. v1 uses '1'.",
+      "const": "1"
+    },
+    "storage_version": {
+      "type": "string",
+      "description": "On-disk storage format version, bumped when the store layout changes. Distinct from schema_version.",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "benchmark_id": {
+      "type": "string",
+      "description": "Optional benchmark id if the store is scoped to a single benchmark.",
+      "maxLength": 64
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failure_record" },
+      "default": []
+    }
+  },
+  "$defs": {
+    "failure_record": {
+      "type": "object",
+      "description": "A preserved failure case with the full reproducibility determinant set.",
+      "additionalProperties": false,
+      "required": [
+        "benchmark_id",
+        "case_id",
+        "manifest_version",
+        "fixture_version",
+        "prompt_version",
+        "model_id",
+        "sampling_params",
+        "seed",
+        "verifier_version",
+        "metric_params",
+        "environment_hash",
+        "task_input",
+        "model_output",
+        "expected",
+        "verifier_verdict",
+        "run_record_ref"
+      ],
+      "properties": {
+        "benchmark_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "case_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "manifest_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "fixture_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "prompt_version": {
+          "type": "string",
+          "description": "Prompt or prompt-template version.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "model_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sampling_params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "seed": { "type": ["string", "integer", "null"] },
+        "verifier_version": {
+          "type": "string",
+          "description": "Verifier/scorer version, e.g. 'state_check@1.0.0' or 'exact_match@1.0.0'.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "metric_params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "environment_hash": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "task_input": {
+          "description": "The failed task input (preserved verbatim).",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": true }
+          ]
+        },
+        "model_output": {
+          "description": "The model output that failed verification. Text for text benchmarks, or a tool-action transcript for tool-task benchmarks.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": true },
+            { "type": "array", "items": {} }
+          ]
+        },
+        "expected": {
+          "description": "Expected value the model output failed to match. May be null only for preserved failure cases with explicit metadata.",
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "array", "items": {} },
+            { "type": "object", "additionalProperties": true }
+          ]
+        },
+        "expected_metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "verifier_verdict": {
+          "type": "object",
+          "description": "The verifier verdict recorded for this failure.",
+          "additionalProperties": false,
+          "required": ["verdict"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["fail"] },
+            "score": { "type": "number", "minimum": 0, "maximum": 1 },
+            "reason": { "type": "string" }
+          }
+        },
+        "run_record_ref": {
+          "type": "object",
+          "description": "Reference to the run-record this failure was preserved from.",
+          "additionalProperties": false,
+          "required": ["run_id"],
+          "properties": {
+            "run_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "path": { "type": "string", "description": "Optional filesystem path to the run-record." }
+          }
+        },
+        "preserved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dedup_key": {
+          "type": "string",
+          "description": "Optional precomputed deduplication key derived from the full reproducibility determinant set. If absent, the consumer recomputes it from the determinant fields."
+        }
+      }
+    }
+  }
+}

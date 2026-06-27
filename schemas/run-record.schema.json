@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-bench.local/schemas/run-record.schema.json",
+  "title": "Run record",
+  "description": "Reproducible record of a single benchmark run. Frozen by chunk C02 for v1 chunks C01-C12; post-v1 schema evolution is owned by C13 via a versioned migration plan, not by in-flight edits to this file. The tool-action transcript and final repo-state snapshot fields are frozen here so C05 implements against them and C07 does not need to extend run_records.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "benchmark",
+    "model",
+    "prompt",
+    "sampling_params",
+    "seed",
+    "fixture_version",
+    "manifest_version",
+    "environment_hash",
+    "metric_params",
+    "cases",
+    "aggregate"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version this run-record conforms to. v1 uses '1'.",
+      "const": "1"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique run identifier. Documented volatile field; not part of the reproducibility determinant set.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Run start timestamp (volatile)."
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Run end timestamp (volatile)."
+    },
+    "benchmark": {
+      "type": "object",
+      "description": "Benchmark identity and metadata captured at run time.",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "task_type": { "type": "string", "enum": ["text", "tool-task"] },
+        "domain": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "status": { "type": "string", "enum": ["experimental", "stable"] }
+      }
+    },
+    "model": {
+      "type": "object",
+      "description": "Model/adapter identity. For file-based predictions, model.id records the prediction source (e.g. 'file:<dir>').",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "provider": { "type": "string", "maxLength": 128 },
+        "adapter": { "type": "string", "enum": ["text", "agent", "stub", "file", "replay"], "maxLength": 32 }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "description": "Pinned prompt used for the run.",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "template": { "type": "string" },
+        "path": { "type": "string" },
+        "rendered": { "type": "string", "description": "Optional rendered prompt for a single-prompt run." }
+      }
+    },
+    "sampling_params": {
+      "type": "object",
+      "description": "Sampling parameters (temperature, top_p, max_tokens, etc.). Part of the reproducibility determinant set.",
+      "additionalProperties": true
+    },
+    "seed": {
+      "type": ["string", "integer", "null"],
+      "description": "Sampling seed. Part of the reproducibility determinant set."
+    },
+    "fixture_version": {
+      "type": "string",
+      "description": "Version of the fixtures/cases used. Part of the reproducibility determinant set.",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "manifest_version": {
+      "type": "string",
+      "description": "Version of the benchmark manifest used. Part of the reproducibility determinant set.",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "environment_hash": {
+      "type": "string",
+      "description": "Deterministic hash of the execution environment (sandbox backend, runtime, OS class). Excludes volatile result output paths. Part of the reproducibility determinant set.",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "environment": {
+      "type": "object",
+      "description": "Structured environment details backing the environment_hash.",
+      "additionalProperties": false,
+      "properties": {
+        "sandbox_backend": { "type": "string", "maxLength": 64 },
+        "python": { "type": "string", "maxLength": 32 },
+        "os": { "type": "string", "maxLength": 64 },
+        "runner_version": { "type": "string", "maxLength": 32 }
+      }
+    },
+    "metric_params": {
+      "type": "object",
+      "description": "Verifier/scorer parameters in effect for the run. Part of the reproducibility determinant set.",
+      "additionalProperties": true
+    },
+    "verifier": {
+      "type": "object",
+      "description": "Verifier configuration in effect for the run.",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "enum": ["exact_match", "contains_any", "regex_match", "set_f1", "state_check", "llm_judge"] },
+        "version": { "type": "string", "maxLength": 32 }
+      }
+    },
+    "tag_filter": {
+      "type": ["string", "null"],
+      "description": "Tag filter applied to case selection for this run, e.g. 'smoke'. Null means no filter."
+    },
+    "cases": {
+      "type": "array",
+      "description": "Per-case verdicts and raw outputs.",
+      "items": { "$ref": "#/$defs/case_result" },
+      "minItems": 0
+    },
+    "aggregate": {
+      "type": "object",
+      "description": "Aggregate score over the selected cases.",
+      "additionalProperties": false,
+      "required": ["metric", "value", "n_cases"],
+      "properties": {
+        "metric": { "type": "string", "maxLength": 64 },
+        "value": { "type": "number" },
+        "n_cases": { "type": "integer", "minimum": 0 },
+        "n_pass": { "type": "integer", "minimum": 0 },
+        "n_fail": { "type": "integer", "minimum": 0 },
+        "details": { "type": "object", "additionalProperties": true }
+      }
+    }
+  },
+  "$defs": {
+    "case_result": {
+      "type": "object",
+      "description": "Per-case result. Raw output is text for text benchmarks, or a tool-action transcript for tool-task benchmarks.",
+      "additionalProperties": false,
+      "required": ["case_id", "verdict", "score"],
+      "properties": {
+        "case_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "verdict": { "type": "string", "enum": ["pass", "fail"] },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "expected": {},
+        "observed": {
+          "description": "Observed model output. Text for text benchmarks; may be omitted when a transcript is present."
+        },
+        "provenance": { "type": "object", "additionalProperties": true },
+        "error": {
+          "type": ["string", "null"],
+          "description": "Verifier/runner error message if the case could not be evaluated; null otherwise."
+        },
+        "transcript": {
+          "type": "array",
+          "description": "Tool-action transcript for tool-task benchmarks. Fields frozen by C02; C05 implements against this and C07 does not extend it.",
+          "items": { "$ref": "#/$defs/tool_action" }
+        },
+        "final_repo_state": {
+          "description": "Final repo-state snapshot passed to the state-check verifier. Frozen by C02.",
+          "$ref": "#/$defs/repo_state"
+        }
+      }
+    },
+    "tool_action": {
+      "type": "object",
+      "description": "A single tool action captured in the run-record transcript.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "argv",
+        "cwd",
+        "exit_code",
+        "wall_clock_ms",
+        "timeout",
+        "sandbox_boundary_violation"
+      ],
+      "properties": {
+        "command": { "type": "string", "description": "Command name, e.g. 'git'.", "maxLength": 128 },
+        "argv": {
+          "type": "array",
+          "description": "Argument vector (excluding the command name).",
+          "items": { "type": "string" }
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory relative to the sandbox root."
+        },
+        "env_overrides": {
+          "type": "object",
+          "description": "Environment variable overrides applied for this action.",
+          "additionalProperties": { "type": "string" }
+        },
+        "stdin": {
+          "type": ["string", "null"],
+          "description": "Standard input provided to the action; null if none."
+        },
+        "exit_code": {
+          "type": ["integer", "null"],
+          "description": "Process exit code; null if the action did not run or was killed before producing one."
+        },
+        "stdout": { "type": "string", "default": "" },
+        "stderr": { "type": "string", "default": "" },
+        "wall_clock_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Wall-clock duration in milliseconds."
+        },
+        "timeout": {
+          "type": "boolean",
+          "description": "True if the action exceeded its timeout and was killed.",
+          "default": false
+        },
+        "sandbox_boundary_violation": {
+          "type": "boolean",
+          "description": "True if the action attempted to breach the sandbox boundary (absolute paths, symlink escapes, network, credentials).",
+          "default": false
+        },
+        "violation_reason": {
+          "type": ["string", "null"],
+          "description": "Reason recorded when sandbox_boundary_violation is true."
+        }
+      }
+    },
+    "repo_state": {
+      "type": "object",
+      "description": "Final repository state snapshot materialized from the sandbox after a tool-task run and passed to the state-check verifier.",
+      "additionalProperties": false,
+      "properties": {
+        "file_tree": {
+          "type": "array",
+          "description": "List of file paths relative to the sandbox root.",
+          "items": { "type": "string" }
+        },
+        "git_status": {
+          "type": "string",
+          "description": "Output of `git status --porcelain` (or equivalent)."
+        },
+        "branches": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "commits": {
+          "type": "array",
+          "description": "Commit summaries (sha + subject) in reverse-chronological order.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sha", "subject"],
+            "properties": {
+              "sha": { "type": "string", "minLength": 7, "maxLength": 64 },
+              "subject": { "type": "string" }
+            }
+          }
+        },
+        "diff": {
+          "type": "string",
+          "description": "Unified diff of the working tree against HEAD (or the relevant base)."
+        }
+      }
+    }
+  }
+}

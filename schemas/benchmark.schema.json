@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-bench.local/schemas/benchmark.schema.json",
+  "title": "Benchmark manifest",
+  "description": "Manifest describing a single benchmark in the ai-bench suite. Frozen by chunk C02 for v1 chunks C01-C12; post-v1 schema evolution is owned by C13 via a versioned migration plan, not by in-flight edits to this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "description",
+    "domain",
+    "task_type",
+    "metric",
+    "version",
+    "contributor",
+    "license",
+    "case_glob"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version this manifest conforms to. v1 uses '1'.",
+      "const": "1"
+    },
+    "id": {
+      "type": "string",
+      "description": "Stable, unique benchmark identifier (slug). Used by discovery, the registry, and run-records.",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable benchmark name.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description of what the benchmark measures.",
+      "minLength": 1
+    },
+    "domain": {
+      "type": "string",
+      "description": "Domain label, e.g. 'recreation', 'tool-use', 'spatial-reasoning'.",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "task_type": {
+      "type": "string",
+      "description": "Task type selecting the runner adapter and verifier path.",
+      "enum": ["text", "tool-task"]
+    },
+    "metric": {
+      "type": "object",
+      "description": "Verifier/scorer configuration for this benchmark.",
+      "additionalProperties": false,
+      "required": ["verifier"],
+      "properties": {
+        "verifier": {
+          "type": "string",
+          "description": "Built-in verifier name. v1 supports exact_match, contains_any, regex_match, set_f1, state_check, llm_judge.",
+          "enum": [
+            "exact_match",
+            "contains_any",
+            "regex_match",
+            "set_f1",
+            "state_check",
+            "llm_judge"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Verifier parameters (e.g. case sensitivity, expected set). Free-form per verifier; validated by the scorer.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "version": {
+      "type": "string",
+      "description": "Benchmark manifest/fixture version (semver-ish). Bumped when cases or expected values change.",
+      "pattern": "^[0-9]+(\\.[0-9]+){0,2}([+-][0-9A-Za-z.-]+)?$",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "contributor": {
+      "type": "object",
+      "description": "Authorship/provenance metadata.",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "contact": {
+          "type": "string",
+          "description": "Optional contact handle (email, handle, or URL).",
+          "maxLength": 256
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        }
+      }
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX license identifier or 'proprietary'.",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "case_glob": {
+      "type": "string",
+      "description": "Glob (relative to the benchmark directory) selecting case files. Resolved safely by the loader; cannot escape the benchmark directory.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "tags": {
+      "type": "array",
+      "description": "Benchmark-level tags. Free-form strings; the case-level 'smoke' tag is reserved for case files.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z0-9][a-z0-9_-]*$"
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "status": {
+      "type": "string",
+      "description": "Maturity status. Defaults to 'experimental' when omitted.",
+      "enum": ["experimental", "stable"],
+      "default": "experimental"
+    },
+    "prompt_template": {
+      "type": "object",
+      "description": "Optional pinned prompt template for reproducibility.",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "template": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "sampling": {
+      "type": "object",
+      "description": "Default sampling parameters for the benchmark; overridable per run.",
+      "additionalProperties": true
+    }
+  }
+}
