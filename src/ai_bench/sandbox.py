@@ -38,6 +38,7 @@ import resource
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,6 +98,17 @@ CREDENTIAL_ENV_PREFIXES: tuple[str, ...] = (
     "CREDENTIAL", "PASSWORD", "API_KEY", "PRIVATE_KEY",
 )
 
+# C07 final hardening: env keys that define the sandbox boundary itself and
+# MUST NOT be replaced by a tool-action env override.  ``HOME`` is always
+# rewritten to point inside the sandbox root by :func:`sanitize_env`, and
+# ``PATH`` is fixed to a trusted value so git resolves to a known binary
+# rather than a host-injected directory.  An override for either is a
+# boundary violation: it would redirect git at host config (``HOME``) or at
+# an attacker-controlled binary (``PATH``).  These keys remain in the env
+# allowlist (so the inherited base value flows through) but are excluded
+# from the override surface.
+BOUNDARY_ENV_KEYS: frozenset[str] = frozenset({"HOME", "PATH"})
+
 # C07.3: host credential/config paths that must not be visible inside the
 # sandbox.  The in-process backend never mounts the host home, but we also
 # reject any tool action that tries to read these locations explicitly.
@@ -110,8 +122,10 @@ DEFAULT_TIMEOUT_MS = 10_000
 
 # C07.3: process-count cap for the in-process backend.  The in-process
 # backend does not spawn subprocesses for file ops; for git it spawns at most
-# one child per action.  This cap is enforced for the bwrap backend's
-# subprocess dispatch and documents the policy.
+# one child per action.  C07 final hardening: this cap is now enforced by the
+# dispatcher via a per-dispatcher active-process counter; a concurrent caller
+# that would exceed it records a boundary violation instead of spawning an
+# extra child.
 MAX_PROCESSES = 1
 # C07 review: strict git safe-subcommand/option allowlist for the in-process
 # and bwrap backends.  The dispatcher MUST NOT forward arbitrary argv to the
@@ -186,7 +200,7 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
                       "--reverse", "--no-merges", "--merges", "--first-parent",
                       "--stat", "--shortstat", "--name-only", "--name-status",
                       "--numstat", "--patch", "-p", "--no-patch",
-                      "--show-signature", "--graph", "--decorate",
+                      "--graph", "--decorate",
                       "--source", "--mailmap", "--no-mailmap", "-z"}),
     "show": frozenset({"--stat", "--shortstat", "--name-only", "--name-status",
                        "--numstat", "--patch", "-p", "--no-patch",
@@ -267,8 +281,7 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
                        "-b", "--initial-branch", "--separate-git-dir",
                        "--object-format"}),
     "add": frozenset({"-A", "--all", "-u", "--update", "-f", "--force",
-                      "-i", "--interactive", "-p", "--patch", "-N",
-                      "--intent-to-add", "-n", "--dry-run", "--renormalize",
+                      "-N", "--intent-to-add", "-n", "--dry-run", "--renormalize",
                       "-v", "--verbose", "--ignore-removal", "--no-ignore-removal",
                       "--chmod", "-z"}),
     "rm": frozenset({"-f", "--force", "-r", "--cached", "-n", "--dry-run",
@@ -276,16 +289,15 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
     "mv": frozenset({"-f", "--force", "-k", "-n", "--dry-run", "-v", "--verbose",
                      "--sparse", "--pathspec-from-file"}),
     "commit": frozenset({"-m", "--message", "-a", "--all", "-q", "--quiet",
-                         "-v", "--verbose", "--amend", "--no-edit", "-e",
-                         "--edit", "--allow-empty", "--allow-empty-message",
-                         "--no-verify", "--verify", "-s", "--signoff",
-                         "--no-signoff", "--author", "--date", "--cleanup",
-                         "--no-status", "--status", "-z", "--no-verify",
+                         "-v", "--verbose", "--amend",
+                         "--allow-empty", "--allow-empty-message",
+                         "--author", "--date", "--cleanup",
+                         "--no-status", "--status", "-z",
                          "--reset-author", "--trailer", "-F", "--file",
                          "-C", "--reuse-message", "-c", "--reedit-message",
                          "--no-post-rewrite", "--post-rewrite"}),
     "restore": frozenset({"-s", "--source", "-W", "--worktree", "-S",
-                          "--staged", "-p", "--patch", "--ours", "--theirs",
+                          "--staged", "--ours", "--theirs",
                           "-m", "--merge", "--conflict", "--ignore-unmerged",
                           "--no-ignore-unmerged", "--ignore-skip-worktree-bits",
                           "--overlay", "--no-overlay", "-q", "--quiet",
@@ -293,7 +305,7 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
     "stash": frozenset({"push", "pop", "apply", "drop", "list", "show",
                         "branch", "clear", "create", "store", "save",
                         "--keep-index", "--no-keep-index", "--include-untracked",
-                        "-u", "--all", "-p", "--patch", "-q", "--quiet",
+                        "-u", "--all", "-q", "--quiet",
                         "-m", "--message", "--staged", "-S", "-n",
                         "--no-index", "--index"}),
     "branch": frozenset({"-d", "--delete", "-D", "--list", "-m", "--move",
@@ -303,12 +315,12 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
                          "--set-upstream", "--track", "--no-track",
                          "--contains", "--no-contains", "--merged",
                          "--no-merged", "--points-at", "--column",
-                         "--no-column", "-t", "--edit-description",
+                         "--no-column", "-t",
                          "--abbrev", "--no-abbrev", "-i", "--ignore-case",
                          "--sort", "--format", "--show-current", "-z"}),
     "checkout": frozenset({"-b", "--branch", "-B", "-q", "--quiet", "-f",
                            "--force", "--track", "--no-track", "--detach",
-                           "--orphan", "-m", "--merge", "-p", "--patch",
+                           "--orphan", "-m", "--merge",
                            "--ours", "--theirs", "--conflict", "--no-progress",
                            "--progress", "-t", "--theirs", "--ours", "--no-write-tree",
                            "--write-tree", "--recurse-submodules",
@@ -319,57 +331,55 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
                          "-m", "--merge", "--guess", "--no-guess", "-t",
                          "--discard-changes", "--recurse-submodules",
                          "--no-recurse-submodules", "--orphan", "-z"}),
-    "tag": frozenset({"-l", "--list", "-d", "--delete", "-v", "--verify",
-                      "-a", "--annotate", "-s", "--sign", "-f", "--force",
-                      "-m", "--message", "-F", "--file", "-e", "--edit",
-                      "-u", "--local-user", "-n", "--column", "--no-column",
+    "tag": frozenset({"-l", "--list", "-d", "--delete",
+                      "-a", "--annotate", "-f", "--force",
+                      "-m", "--message", "-F", "--file",
+                      "-n", "--column", "--no-column",
                       "--contains", "--no-contains", "--merged", "--no-merged",
                       "--points-at", "--sort", "--format", "--cleanup",
                       "--create-reflog", "-z"}),
     "reset": frozenset({"--soft", "--mixed", "--hard", "--merge", "--keep",
-                        "-q", "--quiet", "-p", "--patch", "-N",
+                        "-q", "--quiet", "-N",
                         "--intent-to-add", "--pathspec-from-file", "-z"}),
-    "clean": frozenset({"-d", "-f", "--force", "-i", "--interactive", "-n",
+    "clean": frozenset({"-d", "-f", "--force", "-n",
                         "--dry-run", "-q", "--quiet", "-x", "-X", "-e",
                         "--exclude", "--dry-run", "--no-recursive",
                         "--recursive", "-z"}),
     "merge": frozenset({"-q", "--quiet", "-v", "--verbose", "--no-ff",
                         "--ff", "--ff-only", "--no-commit", "--commit",
-                        "--edit", "-e", "--no-edit", "--no-stat", "--stat",
-                        "-s", "--strategy", "-X", "--strategy-option",
+                        "--no-stat", "--stat",
                         "-m", "--message", "-F", "--file", "--rerere-autoupdate",
                         "--no-rerere-autoupdate", "--abort", "--continue",
-                        "--no-verify", "--verify", "--no-progress", "--progress",
+                        "--no-progress", "--progress",
                         "-z"}),
-    "rebase": frozenset({"-i", "--interactive", "--onto", "--continue",
-                         "--abort", "--skip", "--quit", "--edit-todo",
+    "rebase": frozenset({"--onto", "--continue",
+                         "--abort", "--skip", "--quit",
                          "--show-current-patch", "-q", "--quiet", "-v",
                          "--verbose", "--stat", "--no-stat", "--autostash",
-                         "--no-autostash", "--no-ff", "--ff", "--no-verify",
-                         "--verify", "-m", "--merge", "--no-keep-empty",
-                         "--no-keep-empty", "--keep-empty", "--root",
-                         "--strategy", "-s", "--strategy-option", "-X",
+                         "--no-autostash", "--no-ff", "--ff",
+                         "-m", "--merge", "--no-keep-empty",
+                         "--keep-empty", "--root",
                          "--rerere-autoupdate", "--no-rerere-autoupdate",
-                         "--gpg-sign", "--no-gpg-sign", "-z"}),
-    "cherry-pick": frozenset({"-e", "--edit", "--no-commit", "-n", "-s",
-                              "--signoff", "-x", "--ff", "--no-ff",
+                         "-z"}),
+    "cherry-pick": frozenset({"--no-commit", "-n",
+                              "-x", "--ff", "--no-ff",
                               "--continue", "--abort", "--quit", "--skip",
                               "--allow-empty", "--allow-empty-message",
-                              "--keep-redundant-commits", "--strategy", "-s",
-                              "--strategy-option", "-X", "-m", "--mainline",
-                              "--gpg-sign", "--no-gpg-sign", "-z"}),
-    "revert": frozenset({"-e", "--edit", "--no-edit", "--no-commit", "-n",
-                         "-s", "--signoff", "--continue", "--abort",
-                         "--quit", "--skip", "--strategy", "-s",
-                         "--strategy-option", "-X", "-m", "--mainline",
-                         "--gpg-sign", "--no-gpg-sign", "-z"}),
-    "am": frozenset({"-s", "--signoff", "-3", "--3way", "--keep", "--no-keep",
+                              "--keep-redundant-commits",
+                              "-m", "--mainline",
+                              "-z"}),
+    "revert": frozenset({"--no-commit", "-n",
+                         "--continue", "--abort",
+                         "--quit", "--skip",
+                         "-m", "--mainline",
+                         "-z"}),
+    "am": frozenset({"-3", "--3way", "--keep", "--no-keep",
                      "-q", "--quiet", "-v", "--verbose", "-c", "--scissors",
                      "--no-scissors", "--utf8", "--no-utf8", "--no-utf8",
                      "--ignore-space-change", "--ignore-whitespace",
                      "--whitespace", "--abort", "--continue", "-r", "--resolved",
                      "--skip", "--show-current-patch", "--committer-date-is-author-date",
-                     "--ignore-date", "--ignore-date", "--gpg-sign", "--no-gpg-sign",
+                     "--ignore-date", "--ignore-date",
                      "-z"}),
 }
 
@@ -380,6 +390,18 @@ _GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
 # rejected outright so a sandboxed action cannot arm a follow-up git invocation
 # with an external helper, pager, editor, hook path, or alias shell escape.
 _SAFE_GIT_CONFIG_KEYS: frozenset[str] = frozenset({"user.name", "user.email"})
+# C07 final hardening: git subcommands that produce/rewrite commits and would
+# otherwise run ``prepare-commit-msg``/``commit-msg``/``pre-commit``/
+# ``post-commit``/``pre-rebase``/``post-rewrite`` hooks -- arbitrary programs
+# the sandboxed action could arm via ``core.hooksPath`` (blocked at the config
+# key allowlist) or via a committed ``.git/hooks/*`` file inside the sandbox.
+# For these, the dispatcher points ``core.hooksPath`` at an empty directory so
+# no hook inside the sandbox can execute.  ``--no-verify`` is removed from the
+# option allowlists, so an action cannot bypass hooks either; we disable them
+# ourselves instead.
+_COMMIT_PRODUCING_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"commit", "merge", "rebase", "cherry-pick", "revert", "am", "tag"}
+)
 
 # ``git config`` options that consume the following argv slot as a value
 # (so the key positional can be located correctly).  ``--file``/``-f`` take a
@@ -450,21 +472,17 @@ _GIT_VALUE_OPTIONS: dict[str, frozenset[str]] = {
                            "--conflict", "--pathspec-from-file"}),
     "switch": frozenset({"-c", "--create", "-C", "--force-create",
                          "--orphan"}),
-    "tag": frozenset({"-m", "--message", "-F", "--file", "-u",
-                      "--local-user", "-n", "--cleanup", "--abbrev",
+    "tag": frozenset({"-m", "--message", "-F", "--file",
+                      "-n", "--cleanup", "--abbrev",
                       "--contains", "--no-contains", "--merged",
                       "--no-merged", "--points-at", "--sort", "--format"}),
     "reset": frozenset({"--pathspec-from-file"}),
     "clean": frozenset({"-e", "--exclude"}),
-    "merge": frozenset({"-s", "--strategy", "-X", "--strategy-option",
-                        "-m", "--message", "-F", "--file", "--gpg-sign"}),
-    "rebase": frozenset({"--onto", "-m", "--merge", "--strategy", "-s",
-                         "--strategy-option", "-X", "--gpg-sign"}),
-    "cherry-pick": frozenset({"-s", "--strategy", "-X", "--strategy-option",
-                              "-m", "--mainline", "--gpg-sign"}),
-    "revert": frozenset({"-s", "--strategy", "-X", "--strategy-option",
-                         "-m", "--mainline", "--gpg-sign"}),
-    "am": frozenset({"--whitespace", "--gpg-sign"}),
+    "merge": frozenset({"-m", "--message", "-F", "--file"}),
+    "rebase": frozenset({"--onto", "-m", "--merge"}),
+    "cherry-pick": frozenset({"-m", "--mainline"}),
+    "revert": frozenset({"-m", "--mainline"}),
+    "am": frozenset({"--whitespace"}),
 }
 
 
@@ -672,9 +690,23 @@ def _confine_one_git_path(
     """Confine a single git path operand to ``root``.
 
     Rejects host credential/config paths, absolute paths outside ``root``,
-    and relative paths that escape ``root`` via ``..`` components.  In-sandbox
+    relative paths that escape ``root`` via ``..`` components, and symlink
+    escapes (a path operand that is a symlink, or that traverses a symlinked
+    ancestor, whose resolved target lies outside ``root``).  In-sandbox
     absolute paths and in-sandbox ``..`` traversals (e.g. ``../sibling/x``
-    from a subdirectory that stays under ``root``) are permitted.
+    from a subdirectory that stays under ``root``) are permitted, as are
+    in-sandbox symlinks whose target stays under ``root``.
+
+    The symlink-escape check is applied to every confined git path operand
+    and option value (``--file``/``-f``, ``-F``, ``--separate-git-dir``,
+    ``--template``, ``--path``, ``--git-path``, ``--pathspec-from-file``,
+    ``--exclude-from``/``-X``, ``--output``, and positional path operands).
+    Lexical confinement alone is insufficient: ``git config --file link``
+    where ``link`` is a symlink to ``/etc/gitconfig`` would pass the lexical
+    check (``link`` has no ``..`` component) yet read a host file.  The
+    ancestor walk in :func:`_check_symlink_escape` also catches a
+    not-yet-existing operand (``link/notes``) written through a symlinked
+    directory ancestor that redirects outside ``root``.
     """
     if not target:
         return
@@ -694,20 +726,26 @@ def _confine_one_git_path(
     p = Path(target)
     if p.is_absolute():
         try:
-            p.resolve().relative_to(root_resolved)
+            confined = p.resolve().relative_to(root_resolved)
         except ValueError:
             raise BoundaryViolation(
                 f"git path operand {target!r} is an absolute path outside "
                 "the sandbox root"
             ) from None
+        # Absolute in-sandbox operand: still reject symlink escapes (the
+        # operand itself or an ancestor resolving outside ``root``).
+        _check_symlink_escape(root, root_resolved / confined)
         return
     # Relative operand: resolve against the confined cwd and reject ``..``
     # escapes beyond ``root``.  ``_confine_lexical`` normalizes ``..`` against
     # ``root`` and raises on escape, so in-sandbox ``../sibling`` traversals
     # are allowed while ``../host.cfg`` / ``../../etc`` are rejected.
     candidate = cwd_path / target
-    _confine_lexical(root, candidate)
-
+    confined = _confine_lexical(root, candidate)
+    # C07 final hardening: lexical confinement is not enough -- a symlinked
+    # operand or ancestor whose target escapes ``root`` must be rejected
+    # before git reads/writes through it.
+    _check_symlink_escape(root, confined)
 
 # ---------------------------------------------------------------------------
 # Backend selection
@@ -933,20 +971,29 @@ def sanitize_env(
     """Return a sanitized env for a sandboxed action.
 
     Starts empty, copies only allowlisted keys from ``base``, rewrites HOME
-    to point inside the sandbox, applies ``overrides`` for allowlisted keys,
-    and strips any credential-prefixed override.  Credential/cloud/SSH env is
-    never present in the returned env.
+    to point inside the sandbox, fixes PATH to a trusted value, applies
+    ``overrides`` for allowlisted keys, and strips any credential-prefixed
+    override.  Credential/cloud/SSH env is never present in the returned env.
+
+    ``HOME`` and ``PATH`` are boundary keys: they are never replaced by an
+    override.  ``HOME`` always points inside the sandbox root and ``PATH`` is
+    fixed to a trusted ``/usr/bin:/bin`` so git resolves to a known binary
+    rather than a host-injected directory.  A tool action that tries to
+    override either is a boundary violation recorded by the dispatcher
+    caller via :func:`_boundary_override_violations`; the override itself is
+    dropped here so it can never reach the subprocess env.
     """
     out: dict[str, str] = {}
     for key in config.env_allowlist:
         if key in base:
             out[key] = str(base[key])
-    # HOME always points inside the sandbox, regardless of base.
+    # HOME always points inside the sandbox, regardless of base or override.
     out["HOME"] = str(sandbox_root)
-    # A minimal PATH is required for git; keep the inherited PATH only if it
-    # was allowlisted through.  We always ensure /usr/bin:/bin is available so
-    # git is resolvable without exposing host-specific paths via env.
-    out["PATH"] = base.get("PATH", "/usr/bin:/bin")
+    # C07 final hardening: PATH is fixed to a trusted value so git resolves to
+    # a known binary (``/usr/bin/git``) and a tool action cannot redirect git
+    # at an attacker-controlled executable via a PATH override.  The inherited
+    # PATH is ignored.
+    out["PATH"] = "/usr/bin:/bin"
     # Safe git identity defaults so git operations do not need host config.
     out.setdefault("GIT_AUTHOR_NAME", "ai-bench-sandbox")
     out.setdefault("GIT_AUTHOR_EMAIL", "sandbox@ai-bench.local")
@@ -964,9 +1011,15 @@ def sanitize_env(
                 # recorded by the dispatcher caller, which sees the rejected
                 # key in the returned env's absence.
                 continue
+            if key in BOUNDARY_ENV_KEYS:
+                # HOME/PATH overrides are boundary violations: dropped here,
+                # recorded by the dispatcher caller.  They must never replace
+                # the sandbox HOME or the trusted PATH.
+                continue
             if key in config.env_allowlist:
                 out[key] = str(value)
-            # Non-allowlisted, non-credential overrides are dropped.
+            # Non-allowlisted, non-credential, non-boundary overrides are
+            # dropped silently.
     return out
 
 
@@ -987,6 +1040,47 @@ def _credential_override_violations(
         if _is_credential_env(key):
             bad.append(key)
     return bad
+
+
+def _boundary_override_violations(
+    overrides: Mapping[str, str], config: SandboxConfig
+) -> list[str]:
+    """Return the boundary env keys (``HOME``/``PATH``) in ``overrides``.
+
+    A tool action that tries to override ``HOME`` or ``PATH`` is a boundary
+    violation: ``HOME`` is fixed inside the sandbox and ``PATH`` is fixed to a
+    trusted value, so an override for either is rejected and recorded.  The
+    override is dropped by :func:`sanitize_env`; this helper lets the
+    dispatcher record the rejected keys in the transcript.
+    """
+    bad: list[str] = []
+    for key in overrides:
+        if key in BOUNDARY_ENV_KEYS:
+            bad.append(key)
+    return bad
+
+
+def _hooks_disabled_env(root: Path, sub: str) -> dict[str, str]:
+    """Return env additions that disable git hooks for commit-producing commands.
+
+    Git has no single ``GIT_NO_HOOKS`` env var, so for subcommands in
+    :data:`_COMMIT_PRODUCING_GIT_SUBCOMMANDS` we point ``core.hooksPath`` at an
+    empty directory inside the sandbox via ``GIT_CONFIG_PARAMETERS``.  This
+    neutralizes any ``.git/hooks/*`` program the sandboxed action may have
+    committed, so a commit/merge/rebase/cherry-pick/revert/am/tag cannot run
+    an arbitrary hook program.  ``--no-verify`` is removed from the option
+    allowlists, so the action cannot bypass hooks either; we disable them
+    ourselves instead.  Non-commit-producing subcommands are unaffected.
+    """
+    if sub not in _COMMIT_PRODUCING_GIT_SUBCOMMANDS:
+        return {}
+    hooks_dir = root / ".disabled-hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    # ``GIT_CONFIG_PARAMETERS`` passes ``-c`` style key/value pairs without
+    # letting the action inject arbitrary ``-c`` argv (which is forbidden by
+    # the option allowlist).  The value is shell-quoted by git's config
+    # parser; an empty hooks directory means no hook runs.
+    return {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath={hooks_dir}'"}
 
 
 # ---------------------------------------------------------------------------
@@ -1161,6 +1255,14 @@ class InProcessSandboxDispatcher:
 
     def __init__(self, config: SandboxConfig | None = None) -> None:
         self.config = config or SandboxConfig()
+        # C07 final hardening: enforce the per-dispatcher process-count cap.
+        # ``max_processes`` is the maximum number of concurrent subprocesses
+        # the dispatcher may spawn; the in-process backend dispatches actions
+        # serially so this is naturally 1, but the cap is now enforced rather
+        # than merely declared -- a concurrent caller that exceeds it records
+        # a boundary violation instead of silently spawning extra children.
+        self._active_processes = 0
+        self._proc_lock = threading.Lock()
 
     def dispatch(
         self,
@@ -1190,23 +1292,72 @@ class InProcessSandboxDispatcher:
                 action, cwd, argv, env_overrides, _ViolationRecord(reason), start
             )
 
+        # C07 final hardening: HOME/PATH overrides are boundary violations.
+        # HOME is fixed inside the sandbox and PATH is fixed to a trusted
+        # value; an override for either is rejected and recorded before the
+        # action runs.
+        boundary_keys = _boundary_override_violations(env_overrides, self.config)
+        if boundary_keys:
+            reason = (
+                "boundary env overrides rejected (HOME/PATH are fixed by the "
+                "sandbox): " + ", ".join(sorted(boundary_keys))
+            )
+            return self._violation_row(
+                action, cwd, argv, env_overrides, _ViolationRecord(reason), start
+            )
+
         # C07.3: per-command timeout.
         timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
 
-        try:
-            handler = self._handler_for(action.command)
-            exit_code, stdout, stderr = self._run_handler(
-                handler, action, sandbox, argv, cwd, env_overrides, timeout_ms
-            )
-        except BoundaryViolation as exc:
-            return self._violation_row(
-                action, cwd, argv, env_overrides,
-                _ViolationRecord(str(exc)), start,
-            )
-        except subprocess.TimeoutExpired:
-            return self._timeout_row(action, cwd, argv, env_overrides, start)
-        except Exception as exc:  # pragma: no cover - defensive
-            return self._error_row(action, cwd, argv, env_overrides, str(exc), start)
+        # C07 final hardening: enforce the per-dispatcher process-count cap.
+        # Only git spawns a subprocess; file ops are in-process.  If the cap
+        # is exceeded (a concurrent caller), record a boundary violation
+        # instead of spawning an extra child.
+        if action.command == "git":
+            with self._proc_lock:
+                if self._active_processes >= self.config.max_processes:
+                    reason = (
+                        f"process-count cap exceeded: {self._active_processes}/"
+                        f"{self.config.max_processes} subprocesses already "
+                        "active; refusing to spawn another"
+                    )
+                    return self._violation_row(
+                        action, cwd, argv, env_overrides,
+                        _ViolationRecord(reason), start,
+                    )
+                self._active_processes += 1
+            try:
+                handler = self._handler_for(action.command)
+                exit_code, stdout, stderr = self._run_handler(
+                    handler, action, sandbox, argv, cwd, env_overrides, timeout_ms
+                )
+            except BoundaryViolation as exc:
+                return self._violation_row(
+                    action, cwd, argv, env_overrides,
+                    _ViolationRecord(str(exc)), start,
+                )
+            except subprocess.TimeoutExpired:
+                return self._timeout_row(action, cwd, argv, env_overrides, start)
+            except Exception as exc:  # pragma: no cover - defensive
+                return self._error_row(action, cwd, argv, env_overrides, str(exc), start)
+            finally:
+                with self._proc_lock:
+                    self._active_processes -= 1
+        else:
+            try:
+                handler = self._handler_for(action.command)
+                exit_code, stdout, stderr = self._run_handler(
+                    handler, action, sandbox, argv, cwd, env_overrides, timeout_ms
+                )
+            except BoundaryViolation as exc:
+                return self._violation_row(
+                    action, cwd, argv, env_overrides,
+                    _ViolationRecord(str(exc)), start,
+                )
+            except subprocess.TimeoutExpired:
+                return self._timeout_row(action, cwd, argv, env_overrides, start)
+            except Exception as exc:  # pragma: no cover - defensive
+                return self._error_row(action, cwd, argv, env_overrides, str(exc), start)
 
         wall = int((time.monotonic() - start) * 1000)
         return T.ToolAction(
@@ -1314,6 +1465,9 @@ class InProcessSandboxDispatcher:
             config=self.config,
             overrides=env_overrides,
         )
+        # C07 final hardening: disable hooks for commit-producing commands so
+        # an action-committed ``.git/hooks/*`` program cannot run.
+        env.update(_hooks_disabled_env(sandbox.root, sub))
         # C07 review: confine every git path operand/option value to the
         # sandbox root.  This catches ``..`` escapes (``config --file
         # ../host.cfg``, ``diff --no-index ../outside``, ``init ../escape``),
@@ -1322,7 +1476,12 @@ class InProcessSandboxDispatcher:
         # ``_validate_git_argv`` which cannot inspect option *values*.
         _confine_git_path_args(sandbox.root, cwd, sub, rest)
 
-        timeout_s = max(1, timeout_ms / 1000.0)
+        # C07.3: per-command timeout.  Honor the requested limit faithfully,
+        # including sub-second limits; the previous ``max(1, ...)`` floor
+        # silently inflated any sub-second timeout to 1s and let fast git
+        # commands slip past the cap.  A tiny epsilon keeps the value
+        # strictly positive for subprocess.run without weakening enforcement.
+        timeout_s = max(timeout_ms / 1000.0, 1e-6)
         try:
             proc = subprocess.run(
                 ["git", sub, *rest],
@@ -1598,6 +1757,16 @@ class BwrapSandboxDispatcher:
             return self._inner._violation_row(
                 action, cwd, argv, env_overrides, _ViolationRecord(reason), start
             )
+        # C07 final hardening: HOME/PATH overrides are boundary violations.
+        boundary_keys = _boundary_override_violations(env_overrides, self.config)
+        if boundary_keys:
+            reason = (
+                "boundary env overrides rejected (HOME/PATH are fixed by the "
+                "sandbox): " + ", ".join(sorted(boundary_keys))
+            )
+            return self._inner._violation_row(
+                action, cwd, argv, env_overrides, _ViolationRecord(reason), start
+            )
         # C07 review: validate the full argv against the strict safe
         # subcommand/option allowlist BEFORE invoking git inside bwrap.  The
         # bwrap backend shares the same chokepoint as the in-process backend
@@ -1617,56 +1786,82 @@ class BwrapSandboxDispatcher:
         # catches these in its ``dispatch`` wrapper; the bwrap backend MUST
         # do the same so a boundary violation is recorded as a transcript row
         # instead of propagating out of ``dispatch`` and crashing the runner.
+        # C07 final hardening: enforce the per-dispatcher process-count cap
+        # for the bwrap backend too.  The bwrap backend spawns one bwrap
+        # subprocess per git action; a concurrent caller that would exceed
+        # ``max_processes`` records a boundary violation instead of spawning
+        # an extra child.  The counter lives on the shared in-process inner
+        # dispatcher so both backends share one cap.
+        with self._inner._proc_lock:
+            if self._inner._active_processes >= self.config.max_processes:
+                reason = (
+                    f"process-count cap exceeded: {self._inner._active_processes}/"
+                    f"{self.config.max_processes} subprocesses already "
+                    "active; refusing to spawn another"
+                )
+                return self._inner._violation_row(
+                    action, cwd, argv, env_overrides,
+                    _ViolationRecord(reason), start,
+                )
+            self._inner._active_processes += 1
         try:
-            cwd_path = _confine_relative(sandbox.root, cwd)
-            _check_symlink_escape(sandbox.root, cwd_path)
-            env = sanitize_env(
-                os.environ, sandbox_root=sandbox.root, config=self.config,
-                overrides=env_overrides,
-            )
-            # C07 review: confine every git path operand/option value to the
-            # sandbox root (``..`` escapes, absolute-outside-root, host
-            # credential/config paths).  Shared chokepoint with the in-process
-            # backend so the two cannot drift on path confinement.
-            _confine_git_path_args(sandbox.root, cwd, sub, rest)
+            try:
+                cwd_path = _confine_relative(sandbox.root, cwd)
+                _check_symlink_escape(sandbox.root, cwd_path)
+                env = sanitize_env(
+                    os.environ, sandbox_root=sandbox.root, config=self.config,
+                    overrides=env_overrides,
+                )
+                # C07 final hardening: disable hooks for commit-producing commands.
+                env.update(_hooks_disabled_env(sandbox.root, sub))
+                # C07 review: confine every git path operand/option value to the
+                # sandbox root (``..`` escapes, absolute-outside-root, host
+                # credential/config paths).  Shared chokepoint with the
+                # in-process backend so the two cannot drift on path confinement.
+                _confine_git_path_args(sandbox.root, cwd, sub, rest)
 
-            timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
-            timeout_s = max(1, timeout_ms / 1000.0)
-            bwrap_argv = [
-                "bwrap",
-                "--ro-bind", "/usr", "/usr",
-                "--ro-bind", "/lib", "/lib",
-                "--ro-bind", "/lib64", "/lib64",
-                "--ro-bind", "/bin", "/bin",
-                "--proc", "/proc",
-                "--dev", "/dev",
-                "--tmpfs", "/tmp",
-                "--bind", str(sandbox.root.resolve()), str(sandbox.root.resolve()),
-                "--unshare-all",
-                "--die-with-parent",
-                "--new-session",
-                "git", sub, *rest,
-            ]
-            proc = subprocess.run(
-                bwrap_argv,
-                cwd=cwd_path,
-                env=env,
-                input=action.stdin,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
-        except BoundaryViolation as exc:
-            return self._inner._violation_row(
-                action, cwd, argv, env_overrides,
-                _ViolationRecord(str(exc)), start,
-            )
-        except subprocess.TimeoutExpired:
-            return self._inner._timeout_row(action, cwd, argv, env_overrides, start)
-        except FileNotFoundError:
-            return self._inner._error_row(
-                action, cwd, argv, env_overrides, "bwrap executable not found", start
-            )
+                timeout_ms = action.timeout_ms or sandbox.default_timeout_ms or self.config.default_timeout_ms
+                # C07.3: honor the requested limit faithfully, including
+                # sub-second limits; see the in-process backend for rationale.
+                timeout_s = max(timeout_ms / 1000.0, 1e-6)
+                bwrap_argv = [
+                    "bwrap",
+                    "--ro-bind", "/usr", "/usr",
+                    "--ro-bind", "/lib", "/lib",
+                    "--ro-bind", "/lib64", "/lib64",
+                    "--ro-bind", "/bin", "/bin",
+                    "--proc", "/proc",
+                    "--dev", "/dev",
+                    "--tmpfs", "/tmp",
+                    "--bind", str(sandbox.root.resolve()), str(sandbox.root.resolve()),
+                    "--unshare-all",
+                    "--die-with-parent",
+                    "--new-session",
+                    "git", sub, *rest,
+                ]
+                proc = subprocess.run(
+                    bwrap_argv,
+                    cwd=cwd_path,
+                    env=env,
+                    input=action.stdin,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+            except BoundaryViolation as exc:
+                return self._inner._violation_row(
+                    action, cwd, argv, env_overrides,
+                    _ViolationRecord(str(exc)), start,
+                )
+            except subprocess.TimeoutExpired:
+                return self._inner._timeout_row(action, cwd, argv, env_overrides, start)
+            except FileNotFoundError:
+                return self._inner._error_row(
+                    action, cwd, argv, env_overrides, "bwrap executable not found", start
+                )
+        finally:
+            with self._inner._proc_lock:
+                self._inner._active_processes -= 1
         wall = int((time.monotonic() - start) * 1000)
         return T.ToolAction(
             command=action.command,

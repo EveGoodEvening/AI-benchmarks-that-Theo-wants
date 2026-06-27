@@ -8,7 +8,7 @@ test fails closed and is recorded.
 """
 
 from __future__ import annotations
-
+import os
 import resource
 from pathlib import Path
 from typing import Any, Sequence
@@ -579,29 +579,57 @@ def test_absolute_git_arg_outside_sandbox_denied(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_timeout_is_enforced_and_recorded(tmp_path: Path) -> None:
-    """A long-running git action is killed and recorded as a timeout violation."""
+def test_timeout_is_enforced_and_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long-running git action is killed and recorded as a timeout violation.
+
+    Deterministic: this exercises the *real* timeout enforcement and recording
+    path (``_handle_git`` -> ``subprocess.run(..., timeout=...)`` ->
+    ``TimeoutExpired`` -> ``_timeout_row``) without betting on ``git log``
+    being slower than a sub-millisecond wall-clock budget, which is unreliable
+    on fast machines (fork/exec + a tiny repo can complete in ~3ms even with
+    ``timeout_ms=1``).  Instead the test fakes ``subprocess.run`` in the
+    ``ai_bench.sandbox`` module namespace: it asserts the requested timeout is
+    propagated faithfully as a sub-second value (proving the enforcement
+    wiring) and then raises ``subprocess.TimeoutExpired`` to deterministically
+    drive the dispatcher's timeout-recording path.  The production code is
+    unchanged and still uses the real ``subprocess.run`` timeout; no security
+    posture is weakened.
+    """
+    import subprocess as _subprocess
+
     root = tmp_path / "sandbox"
     root.mkdir()
-    # Use a git command that would block/hang without input, with a tiny timeout.
-    # `git log` on an empty repo exits quickly, so use a sleep-like git command.
-    # We simulate a timeout by dispatching with a 1ms timeout; the dispatcher
-    # records a timeout if the action exceeds it.
-    row = _dispatch(
-        root,
-        "git",
-        ("log", "--all"),
-        timeout_ms=1,
+    _init_repo_with_commit(root)
+
+    requested_timeout_ms = 1
+    expected_timeout_s = max(requested_timeout_ms / 1000.0, 1e-6)
+    captured: dict[str, Any] = {}
+
+    def _fake_run(*args: Any, **kwargs: Any) -> Any:
+        # Prove the timeout is wired through faithfully as a sub-second value
+        # (the real enforcement path).  ``max(..., 1e-6)`` epsilon is the
+        # dispatcher's own floor; assert it rather than a raw 0.001 so the
+        # test tracks the production formula.
+        captured["timeout"] = kwargs.get("timeout")
+        assert kwargs.get("timeout") == expected_timeout_s, (
+            f"timeout not propagated faithfully: expected {expected_timeout_s}, "
+            f"got {kwargs.get('timeout')!r}"
+        )
+        raise _subprocess.TimeoutExpired(cmd=args[0] if args else "git", timeout=expected_timeout_s)
+
+    monkeypatch.setattr(SB.subprocess, "run", _fake_run)
+
+    row = _dispatch(root, "git", ("log", "--all"), timeout_ms=requested_timeout_ms)
+
+    # The fake subprocess.run was actually called (enforcement path is live).
+    assert captured.get("timeout") == expected_timeout_s
+    assert row.timeout is True, (
+        f"expected timeout violation, got exit={row.exit_code} "
+        f"reason={row.violation_reason!r}"
     )
-    # Either it completed under 1ms (unlikely for git startup) or it timed out.
-    # We accept either a timeout violation or a fast exit; the key assertion is
-    # that the timeout machinery is wired and a timeout is recorded as such
-    # when it fires. To make this deterministic, we assert the timeout flag is
-    # respected: a 1ms timeout on git subprocess startup reliably times out.
-    if row.timeout:
-        assert row.sandbox_boundary_violation is True
-        assert "timeout" in (row.violation_reason or "").lower()
-        assert row.exit_code == 137
+    assert row.sandbox_boundary_violation is True
+    assert "timeout" in (row.violation_reason or "").lower()
+    assert row.exit_code == 137
 
 
 def test_cpu_resource_limit_applied(tmp_path: Path) -> None:
@@ -748,9 +776,423 @@ def test_hardening_violations_recorded_in_run_record_transcript(tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------
+# C07 final hardening: symlink escape on git path operands, HOME/PATH
+# override rejection, signing/editor/verification/interactive/helper option
+# removal, hooks disabling, and max_processes enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_git_path_operand_symlink_escape_denied(tmp_path: Path) -> None:
+    """A git path operand that is a symlink escaping the sandbox is rejected.
+
+    Regression for the C07 final-hardening finding that git path operands were
+    only lexically confined: ``git config --file link`` where ``link`` is a
+    symlink to a host file passes the lexical check (no ``..`` component) but
+    would read a host file.  The symlink-escape check is now applied to every
+    confined git path operand/option value.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    outside = tmp_path / "outside.cfg"
+    outside.write_text("host", encoding="utf-8")
+    link = root / "link"
+    os.symlink(outside, link)
+    row = _dispatch(root, "git", ("config", "--file", "link", "user.name"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    reason = (row.violation_reason or "").lower()
+    assert "symlink" in reason or "outside" in reason
+
+
+def test_git_path_operand_symlink_ancestor_escape_denied(tmp_path: Path) -> None:
+    """A git path operand through a symlinked directory ancestor is rejected."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    link = root / "link"
+    os.symlink(outside, link)
+    row = _dispatch(root, "git", ("config", "--file", "link/host.cfg", "user.name"))
+    assert row.sandbox_boundary_violation is True
+    reason = (row.violation_reason or "").lower()
+    assert "ancestor" in reason or "symlink" in reason or "outside" in reason
+
+
+def test_git_path_taking_option_symlink_value_confined(tmp_path: Path) -> None:
+    """Path-taking option values that are escaping symlinks are confined."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = root / "link"
+    os.symlink(outside, link)
+    for argv in [
+        ("commit", "-F", "link/notes"),
+        ("tag", "-F", "link/notes"),
+        ("init", "--separate-git-dir", "link"),
+    ]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: symlink escape not caught: {row.violation_reason!r}"
+        )
+
+
+def test_git_in_sandbox_symlink_target_allowed(tmp_path: Path) -> None:
+    """A symlink whose target stays inside the sandbox is NOT rejected."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    (root / "real").mkdir()
+    (root / "real" / "f.txt").write_text("x", encoding="utf-8")
+    link = root / "link"
+    os.symlink(root / "real", link)
+    # ``git status`` reading through an in-sandbox symlink must not be a
+    # boundary violation (git may fail, but not with a violation).
+    row = _dispatch(root, "git", ("status", "--porcelain"))
+    assert not row.sandbox_boundary_violation, (
+        f"in-sandbox symlink rejected: {row.violation_reason}"
+    )
+
+
+def test_home_env_override_rejected_as_boundary_violation(tmp_path: Path) -> None:
+    """A HOME override is a boundary violation; HOME is fixed inside the sandbox."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(
+        root, "git", ("status",), env_overrides={"HOME": "/home/attacker"}
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "HOME" in (row.violation_reason or "")
+    assert "boundary" in (row.violation_reason or "").lower()
+
+
+def test_path_env_override_rejected_as_boundary_violation(tmp_path: Path) -> None:
+    """A PATH override is a boundary violation; PATH is fixed to a trusted value."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(
+        root, "git", ("status",),
+        env_overrides={"PATH": "/home/attacker/bin"},
+    )
+    assert row.sandbox_boundary_violation is True
+    assert "PATH" in (row.violation_reason or "")
+    assert "boundary" in (row.violation_reason or "").lower()
+
+
+def test_sanitize_env_path_is_fixed_trusted() -> None:
+    """sanitize_env fixes PATH to /usr/bin:/bin regardless of base or override."""
+    env = SB.sanitize_env(
+        {"PATH": "/host/evil/bin", "HOME": "/host/home"},
+        sandbox_root=Path("/tmp/sandbox"),
+        config=SB.SandboxConfig(),
+        overrides={"PATH": "/override/bin", "HOME": "/override/home"},
+    )
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == "/tmp/sandbox"
+
+
+def test_git_tag_sign_option_denied(tmp_path: Path) -> None:
+    """``git tag -s`` (signing) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("tag", "-s", "-m", "x", "t"))
+    assert row.sandbox_boundary_violation is True
+    assert "allowlist" in (row.violation_reason or "").lower()
+
+
+def test_git_tag_verify_option_denied(tmp_path: Path) -> None:
+    """``git tag -v`` (verification) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("tag", "-v", "t"))
+    assert row.sandbox_boundary_violation is True
+    assert "allowlist" in (row.violation_reason or "").lower()
+
+
+def test_git_tag_edit_option_denied(tmp_path: Path) -> None:
+    """``git tag -e`` (editor) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("tag", "-e", "-a", "-m", "x", "t"))
+    assert row.sandbox_boundary_violation is True
+
+
+def test_git_tag_local_user_option_denied(tmp_path: Path) -> None:
+    """``git tag -u`` (gpg helper) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("tag", "-u", "key", "-a", "t"))
+    assert row.sandbox_boundary_violation is True
+
+
+def test_git_commit_edit_and_verify_options_denied(tmp_path: Path) -> None:
+    """``git commit -e``/``--no-verify`` (editor/verification) are denied."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [("commit", "-e", "-m", "x"), ("commit", "--no-verify", "-m", "x")]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: editor/verify option not denied: {row.violation_reason!r}"
+        )
+
+
+def test_git_commit_signoff_option_denied(tmp_path: Path) -> None:
+    """``git commit -s``/``--signoff`` (signing) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [("commit", "-s", "-m", "x"), ("commit", "--signoff", "-m", "x")]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: signoff option not denied: {row.violation_reason!r}"
+        )
+
+
+def test_git_merge_strategy_option_denied(tmp_path: Path) -> None:
+    """``git merge -s``/``--strategy`` (external helper) is removed."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [("merge", "-s", "ours"), ("merge", "--strategy=ours")]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: strategy option not denied: {row.violation_reason!r}"
+        )
+
+
+def test_git_rebase_interactive_option_denied(tmp_path: Path) -> None:
+    """``git rebase -i`` (interactive) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("rebase", "-i", "main"))
+    assert row.sandbox_boundary_violation is True
+
+
+def test_git_add_interactive_option_denied(tmp_path: Path) -> None:
+    """``git add -i``/``-p`` (interactive) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    for argv in [("add", "-i"), ("add", "-p"), ("add", "--interactive"), ("add", "--patch")]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: interactive option not denied: {row.violation_reason!r}"
+        )
+
+
+def test_git_log_show_signature_option_denied(tmp_path: Path) -> None:
+    """``git log --show-signature`` (verification) is removed from the allowlist."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("log", "--show-signature"))
+    assert row.sandbox_boundary_violation is True
+
+
+def test_git_commit_message_option_still_allowed(tmp_path: Path) -> None:
+    """Regression: benign commit options (-m) still pass the allowlist."""
+    root = tmp_path / "sandbox"
+    _init_repo_with_commit(root)
+    row = _dispatch(root, "git", ("commit", "-m", "ok", "--allow-empty"))
+    # git may succeed or fail (no upstream/etc.), but it must NOT be a
+    # boundary violation from the allowlist.
+    assert not row.sandbox_boundary_violation, (
+        f"commit -m flagged as violation: {row.violation_reason}"
+    )
+
+
+def test_git_commit_hooks_disabled(tmp_path: Path) -> None:
+    """Commit-producing commands disable hooks: an armed pre-commit hook cannot run.
+
+    A ``.git/hooks/pre-commit`` program that would fail the commit is placed
+    in the sandbox repo; because the dispatcher points ``core.hooksPath`` at
+    an empty directory for commit-producing commands, the hook never runs and
+    the commit succeeds (exit 0) rather than being blocked by the hook.
+    """
+    root = tmp_path / "sandbox"
+    _init_repo_with_commit(root)
+    hooks_dir = root / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    row = _dispatch(root, "git", ("commit", "--allow-empty", "-m", "no-hook"))
+    assert not row.sandbox_boundary_violation, (
+        f"commit flagged as violation: {row.violation_reason}"
+    )
+    assert row.exit_code == 0, (
+        f"pre-commit hook ran (hooks not disabled): exit={row.exit_code} "
+        f"stderr={row.stderr!r}"
+    )
+
+
+def test_git_non_commit_command_hooks_not_disabled(tmp_path: Path) -> None:
+    """Non-commit-producing commands do not set the hooks-disable env addition."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    # ``git status`` is not commit-producing; the helper returns no additions.
+    assert SB._hooks_disabled_env(root, "status") == {}
+    assert SB._hooks_disabled_env(root, "commit") != {}
+
+
+def test_max_processes_enforced_records_violation(tmp_path: Path) -> None:
+    """The process-count cap is enforced: exceeding it records a boundary violation.
+
+    ``max_processes`` is no longer merely declared; the dispatcher tracks
+    active subprocesses and rejects a git action that would exceed the cap.
+    We simulate a saturated cap by setting ``_active_processes`` to the cap
+    before dispatching a git action.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    dispatcher = SB.InProcessSandboxDispatcher()
+    dispatcher._active_processes = dispatcher.config.max_processes
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git", argv=("status",), cwd=".", env_overrides={},
+        timeout_ms=None,
+    )
+    row = dispatcher.dispatch(action, sandbox=handle)
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "process-count cap" in (row.violation_reason or "")
+    # The counter is restored (the rejected action did not decrement below 0).
+    assert dispatcher._active_processes == dispatcher.config.max_processes
+
+
+def test_max_processes_counter_restored_after_git(tmp_path: Path) -> None:
+    """The active-process counter returns to 0 after a git action completes."""
+    root = tmp_path / "sandbox"
+    _init_repo_with_commit(root)
+    dispatcher = SB.InProcessSandboxDispatcher()
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git", argv=("status", "--porcelain"), cwd=".",
+        env_overrides={}, timeout_ms=None,
+    )
+    assert dispatcher._active_processes == 0
+    dispatcher.dispatch(action, sandbox=handle)
+    assert dispatcher._active_processes == 0
+
+
+def test_git_positional_path_operand_symlink_escape_denied(tmp_path: Path) -> None:
+    """A positional git path operand that is an escaping symlink is rejected.
+
+    Regression for the C07 final-hardening finding that git path operands
+    were only lexically confined: ``git add link`` where ``link`` is a
+    symlink to a host file passes the lexical check (no ``..`` component)
+    but would let git operate on a host path.  The symlink-escape check is
+    applied to positional path operands (not just path-taking option
+    values) for every subcommand except ``config``.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    link = root / "link"
+    os.symlink(outside, link)
+    for argv in [("add", "link"), ("add", "link/inside")]:
+        row = _dispatch(root, "git", argv)
+        assert row.sandbox_boundary_violation is True, (
+            f"{argv}: symlink escape not caught: {row.violation_reason!r}"
+        )
+        reason = (row.violation_reason or "").lower()
+        assert "symlink" in reason or "outside" in reason or "ancestor" in reason
+
+
+def test_bwrap_backend_enforces_max_processes(tmp_path: Path) -> None:
+    """The bwrap backend enforces the process-count cap via the shared counter.
+
+    The bwrap backend spawns one bwrap subprocess per git action; a
+    concurrent caller that would exceed ``max_processes`` records a
+    boundary violation instead of spawning an extra child.  The counter
+    lives on the shared in-process inner dispatcher so both backends share
+    one cap.  Verified without a real ``bwrap`` install by stubbing
+    availability and saturating the cap: the violation is recorded BEFORE
+    any subprocess is spawned.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git", argv=("status",), cwd=".", env_overrides={},
+        timeout_ms=None,
+    )
+    orig = SB._bwrap_available
+    SB._bwrap_available = lambda: True
+    try:
+        dispatcher = SB.BwrapSandboxDispatcher()
+        # Saturate the shared cap so the next git action must be rejected.
+        dispatcher._inner._active_processes = dispatcher.config.max_processes
+        row = dispatcher.dispatch(action, sandbox=handle)
+    finally:
+        SB._bwrap_available = orig
+    assert row.sandbox_boundary_violation is True, (
+        f"bwrap did not enforce process-count cap: {row.violation_reason!r}"
+    )
+    assert row.exit_code == 126
+    assert "process-count cap" in (row.violation_reason or "")
+    # The rejected action did not decrement the counter below the cap.
+    assert dispatcher._inner._active_processes == dispatcher.config.max_processes
+
+
+def test_bwrap_backend_counter_restored_after_boundary_violation(
+    tmp_path: Path,
+) -> None:
+    """The bwrap counter is restored even when a BoundaryViolation is raised.
+
+    A path-operand escape raises ``BoundaryViolation`` from the shared
+    ``_confine_git_path_args`` chokepoint; the outer try/finally must
+    decrement the active-process counter so the cap is not permanently
+    consumed by a rejected action.  Verified without a real ``bwrap``
+    install by stubbing availability.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git", argv=("add", "../escape"), cwd=".",
+        env_overrides={}, timeout_ms=None,
+    )
+    orig = SB._bwrap_available
+    SB._bwrap_available = lambda: True
+    try:
+        dispatcher = SB.BwrapSandboxDispatcher()
+        assert dispatcher._inner._active_processes == 0
+        dispatcher.dispatch(action, sandbox=handle)
+    finally:
+        SB._bwrap_available = orig
+    assert dispatcher._inner._active_processes == 0, (
+        "bwrap counter not restored after BoundaryViolation"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _write_yaml(path: Path, data: Any) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def _init_repo_with_commit(root: Path) -> None:
+    """Initialize a real git repo with one commit so git commands do real work.
+
+    The root directory is created (idempotently) so callers do not need to
+    ``mkdir`` first; ``git init`` requires its cwd to already exist.
+    """
+    import subprocess
+    root.mkdir(parents=True, exist_ok=True)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(root),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(["git", "init", "-q"], cwd=root, env=env, check=True,
+                   capture_output=True)
+    (root / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=root, env=env, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, env=env,
+                   check=True, capture_output=True)
