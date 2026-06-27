@@ -475,6 +475,10 @@ class TestRunRecordSchema:
             "command",
             "argv",
             "cwd",
+            "env_overrides",
+            "stdin",
+            "stdout",
+            "stderr",
             "exit_code",
             "wall_clock_ms",
             "timeout",
@@ -501,13 +505,15 @@ class TestRunRecordSchema:
         record["cases"][0]["final_repo_state"] = _valid_repo_state()
         _validate(run_record_schema, record)
 
-    def test_repo_state_missing_fields_ok(
+    def test_repo_state_empty_rejected(
         self, run_record_schema: dict[str, Any]
     ) -> None:
-        # repo_state properties are all optional.
+        # repo_state requires file_tree, git_status, branches, commits, and
+        # diff so an empty {} snapshot cannot validate.
         record = _valid_run_record(task_type="tool-task")
         record["cases"][0]["final_repo_state"] = {}
-        _validate(run_record_schema, record)
+        err = _invalid(run_record_schema, record)
+        assert "final_repo_state" in str(err).lower() or "file_tree" in str(err).lower()
 
     def test_missing_required_reproducibility_fields_rejected(
         self, run_record_schema: dict[str, Any]
@@ -642,6 +648,48 @@ class TestRunRecordSchema:
         record["cases"][0]["observed"] = 42
         err = _invalid(run_record_schema, record)
         assert "observed" in str(err).lower()
+
+    def test_verifier_required_at_root(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # The run-record root must pin the verifier that scored it; a record
+        # without a verifier block must be rejected.
+        record = _valid_run_record()
+        del record["verifier"]
+        err = _invalid(run_record_schema, record)
+        assert "verifier" in str(err).lower()
+
+    def test_verifier_name_required(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # A verifier block without a name must be rejected so llm_judge runs
+        # cannot omit judge pins by omitting the name.
+        record = _valid_run_record()
+        record["verifier"] = {"version": "1.0.0"}
+        err = _invalid(run_record_schema, record)
+        assert "name" in str(err).lower()
+
+    def test_text_result_with_empty_observed_accepted(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # For text runs, observed is required but an empty string is valid
+        # raw output (a model may emit no tokens); only null/non-string
+        # observed is rejected.
+        record = _valid_run_record(task_type="text")
+        record["cases"][0]["observed"] = ""
+        _validate(run_record_schema, record)
+
+    def test_repo_state_missing_required_fields_rejected(
+        self, run_record_schema: dict[str, Any]
+    ) -> None:
+        # Each repo_state field is required; dropping any one must reject.
+        for field in ("file_tree", "git_status", "branches", "commits", "diff"):
+            record = _valid_run_record(task_type="tool-task")
+            state = dict(record["cases"][0]["final_repo_state"])
+            del state[field]
+            record["cases"][0]["final_repo_state"] = state
+            err = _invalid(run_record_schema, record)
+            assert field in str(err).lower()
 
 
 # === Failure-store schema ===================================================
@@ -937,7 +985,11 @@ class TestTypedContractDrift:
             verifier=T.RunVerifier(name="state_check", version="1.0.0"),
             tag_filter="smoke",
         )
-        _validate(run_record_schema, _dataclass_to_dict(record))
+        serialized = _dataclass_to_dict(record)
+        # ToolAction.stdin is a schema-nullable required field; the serializer
+        # omits None, so re-inject the explicit null the schema requires.
+        serialized["cases"][0]["transcript"][0]["stdin"] = None
+        _validate(run_record_schema, serialized)
 
     def test_run_record_dataclass_validates_llm_judge_with_judge_config(
         self, run_record_schema: dict[str, Any]
@@ -1076,7 +1128,10 @@ def _dataclass_to_dict(obj: Any) -> Any:
     """Recursively convert a frozen dataclass instance to a JSON-compatible dict.
 
     Omits ``None`` values so optional fields absent from the schema instance do
-    not trigger spurious rejections, and converts tuples to lists.
+    not trigger spurious rejections, and converts tuples to lists. Tests that
+    need an explicit JSON null for a schema-nullable required field (e.g.
+    ``ToolAction.stdin``) re-inject it after serialization, mirroring the
+    ``expected=None`` handling for preserved failure cases.
     """
     import dataclasses
 

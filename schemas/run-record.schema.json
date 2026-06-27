@@ -17,6 +17,7 @@
     "manifest_version",
     "environment_hash",
     "metric_params",
+    "verifier",
     "cases",
     "aggregate"
   ],
@@ -128,8 +129,9 @@
     },
     "verifier": {
       "type": "object",
-      "description": "Verifier configuration in effect for the run.",
+      "description": "Verifier configuration in effect for the run. Required at the run-record root with a name so every run pins the verifier that scored it; llm_judge runs additionally require judge_config.",
       "additionalProperties": false,
+      "required": ["name"],
       "properties": {
         "name": { "type": "string", "enum": ["exact_match", "contains_any", "regex_match", "set_f1", "state_check", "llm_judge"] },
         "version": { "type": "string", "maxLength": 32 },
@@ -192,7 +194,7 @@
               "type": "object",
               "required": ["observed"],
               "properties": {
-                "observed": { "type": "string", "minLength": 1 }
+                "observed": { "type": "string", "minLength": 0 }
               }
             }
           }
@@ -291,6 +293,10 @@
         "command",
         "argv",
         "cwd",
+        "env_overrides",
+        "stdin",
+        "stdout",
+        "stderr",
         "exit_code",
         "wall_clock_ms",
         "timeout",
@@ -347,6 +353,7 @@
       "type": "object",
       "description": "Final repository state snapshot materialized from the sandbox after a tool-task run and passed to the state-check verifier.",
       "additionalProperties": false,
+      "required": ["file_tree", "git_status", "branches", "commits", "diff"],
       "properties": {
         "file_tree": {
           "type": "array",

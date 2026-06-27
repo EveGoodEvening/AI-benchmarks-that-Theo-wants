@@ -313,12 +313,13 @@ class RunJudgeConfig:
 class RunVerifier:
     """Verifier configuration in effect for a run.
 
-    ``judge_config`` is required by the run-record schema when ``name`` is
-    ``llm_judge``; it pins the judge model/prompt/params/seed for
-    reproducibility.
+    ``name`` is required by the run-record schema at the root so every run
+    pins the verifier that scored it. ``judge_config`` is required by the
+    run-record schema when ``name`` is ``llm_judge``; it pins the judge
+    model/prompt/params/seed for reproducibility.
     """
 
-    name: VerifierName | None = None
+    name: VerifierName
     version: str | None = None
     judge_config: RunJudgeConfig | None = None
 
@@ -349,14 +350,15 @@ class ToolAction:
 class RepoState:
     """Final repository state snapshot passed to the state-check verifier.
 
-    Frozen by the C02 run-record schema; C05/C07 consume it as-is.
+    Frozen by the C02 run-record schema; C05/C07 consume it as-is. All fields
+    are required by the schema so an empty ``{}`` snapshot cannot validate.
     """
 
-    file_tree: Sequence[str] = ()
-    git_status: str | None = None
-    branches: Sequence[str] = ()
-    commits: Sequence[Mapping[str, str]] = ()
-    diff: str | None = None
+    file_tree: Sequence[str]
+    git_status: str
+    branches: Sequence[str]
+    commits: Sequence[Mapping[str, str]]
+    diff: str
 
 
 @dataclass(frozen=True)
@@ -410,8 +412,8 @@ class RunRecord:
     metric_params: Mapping[str, Any]
     cases: Sequence[CaseResult]
     aggregate: AggregateScore
+    verifier: RunVerifier
     environment: RunEnvironment | None = None
-    verifier: RunVerifier | None = None
     tag_filter: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
