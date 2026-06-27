@@ -363,6 +363,28 @@ def test_materialize_replay_state_normalizes_cwd_and_ignores_failed_writes() -> 
     assert state.file_tree == ("README.md", "sub/dir/notes.md")
 
 
+def test_materialize_replay_state_ignores_unknown_exit_code_without_timeout_or_violation() -> None:
+    """Regression: exit_code=None must NOT be treated as a successful write.
+
+    A write whose exit code is unknown (None) and that did not time out or
+    violate the sandbox boundary must still be ignored, since there is no
+    evidence the file was actually produced.
+    """
+    transcript = [
+        T.ToolAction(
+            command="file.write", argv=("maybe.txt", "x"), cwd=".",
+            exit_code=None, wall_clock_ms=1,
+        ),
+        # A genuinely successful write is still recorded.
+        T.ToolAction(
+            command="file.write", argv=("real.md", "y"), cwd=".",
+            exit_code=0, wall_clock_ms=1,
+        ),
+    ]
+    state = R._materialize_replay_state(transcript)
+    assert state.file_tree == ("real.md",)
+
+
 def test_fixture_with_symlink_is_rejected(tmp_path: Path) -> None:
     bdir = tmp_path / "symlink-benchmark"
     cases = bdir / "cases"

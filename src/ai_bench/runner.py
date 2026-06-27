@@ -549,10 +549,11 @@ def _materialize_replay_state(transcript: Sequence[T.ToolAction]) -> T.RepoState
     """Materialize a best-effort final repo state from a replay transcript.
 
     Only successful ``file.write`` actions contribute to the file tree: writes
-    with a non-zero/unknown exit code, a timeout, or a sandbox boundary
-    violation are ignored since they may not have produced a file.  The written
-    path (``argv[0]``) is normalized against the action's relative ``cwd`` so a
-    write executed from a subdirectory is recorded at its in-sandbox location.
+    with a non-zero exit code (including an unknown/``None`` exit code), a
+    timeout, or a sandbox boundary violation are ignored since they may not
+    have produced a file.  The written path (``argv[0]``) is normalized
+    against the action's relative ``cwd`` so a write executed from a
+    subdirectory is recorded at its in-sandbox location.
     Paths that cannot be normalized to a clean relative in-sandbox path are
     skipped rather than recorded with a misleading absolute or escaping path.
     """
@@ -560,7 +561,7 @@ def _materialize_replay_state(transcript: Sequence[T.ToolAction]) -> T.RepoState
     for action in transcript:
         if action.command != "file.write" or not action.argv:
             continue
-        if action.exit_code not in (0, None):
+        if action.exit_code != 0:
             continue
         if action.timeout or action.sandbox_boundary_violation:
             continue
