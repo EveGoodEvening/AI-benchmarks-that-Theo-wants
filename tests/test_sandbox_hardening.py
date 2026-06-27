@@ -106,6 +106,134 @@ def test_git_ssh_url_denied_and_recorded(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Git argv safe-subcommand/option allowlist (C07 review)
+# ---------------------------------------------------------------------------
+
+
+def test_git_global_c_alias_shell_escape_denied(tmp_path: Path) -> None:
+    """Regression: ``git -c alias.x='!sh -c ...'`` must not reach host git.
+
+    A global ``-c`` option before the subcommand can define an alias whose
+    expansion runs an arbitrary shell command.  The allowlist rejects every
+    pre-subcommand option, so this config-injection / shell-escape vector is
+    blocked before git is ever invoked.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(
+        root,
+        "git",
+        ("-c", "alias.pwn=!sh -c 'touch /etc/pwned'", "pwn"),
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    reason = (row.violation_reason or "").lower()
+    assert "forbidden" in reason or "-c" in reason or "global" in reason
+
+
+def test_git_global_c_config_injection_denied(tmp_path: Path) -> None:
+    """``git -c core.sshCommand=...`` is rejected as a forbidden global option."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(
+        root,
+        "git",
+        ("-c", "core.sshCommand=sh", "status"),
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "forbidden" in (row.violation_reason or "").lower()
+
+
+def test_git_no_pre_subcommand_options_allowed(tmp_path: Path) -> None:
+    """Any option before the subcommand is rejected, even benign-looking ones."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("--git-dir", "/tmp/x", "status"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+
+
+def test_git_disallowed_subcommand_denied(tmp_path: Path) -> None:
+    """Subcommands outside the safe set (e.g. ``submodule``) are rejected."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("submodule", "update", "--init"))
+    assert row.sandbox_boundary_violation is True
+    assert "allowlist" in (row.violation_reason or "").lower()
+
+
+def test_git_unvetted_option_after_subcommand_denied(tmp_path: Path) -> None:
+    """An option not in the per-subcommand allowlist is rejected."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("status", "--bogus-option"))
+    assert row.sandbox_boundary_violation is True
+    assert "allowlist" in (row.violation_reason or "").lower()
+
+
+def test_git_forbidden_option_after_subcommand_denied(tmp_path: Path) -> None:
+    """A forbidden option (e.g. ``--exec``) after the subcommand is rejected."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    row = _dispatch(root, "git", ("log", "--exec", "/bin/sh"))
+    assert row.sandbox_boundary_violation is True
+    assert "forbidden" in (row.violation_reason or "").lower()
+
+
+def test_git_safe_subcommand_with_safe_options_passes_allowlist(tmp_path: Path) -> None:
+    """A safe subcommand with allowlisted options is not rejected by the allowlist.
+
+    This guards against the allowlist becoming too tight and breaking the
+    legitimate fixture scripts (status --short, add, commit -m, init -q -b).
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    # These should pass the allowlist (git may then fail on an empty repo, but
+    # the violation flag must be False -- the allowlist did not reject them).
+    for argv in [
+        ("init", "-q", "-b", "main"),
+        ("config", "user.name", "fixture"),
+        ("status", "--short"),
+        ("add", "README.md"),
+        ("commit", "-m", "add notes"),
+        ("log", "--oneline"),
+    ]:
+        row = _dispatch(root, "git", argv)
+        assert not row.sandbox_boundary_violation, (
+            f"{argv}: allowlist rejected a safe command: {row.violation_reason}"
+        )
+
+
+def test_bwrap_backend_does_not_share_host_network(tmp_path: Path) -> None:
+    """The bwrap backend must not pass ``--share-net``; network is unshared.
+
+    This is a static guard over the constructed bwrap argv so it holds even in
+    environments where ``bwrap`` is not installed.  ``--unshare-all`` creates
+    an empty network namespace; ``--share-net`` would re-share the host net
+    namespace and MUST NOT appear.
+    """
+    import inspect
+    src = inspect.getsource(SB.BwrapSandboxDispatcher._dispatch_bwrap_git)
+    assert "--share-net" not in src, (
+        "bwrap backend must not share the host network namespace "
+        "(--share-net present)"
+    )
+    assert "--unshare-all" in src, (
+        "bwrap backend must unshare namespaces including network"
+    )
+
+
+def test_bwrap_backend_validates_git_argv_before_invoke(tmp_path: Path) -> None:
+    """The bwrap backend uses the same allowlist chokepoint as in-process."""
+    import inspect
+    src = inspect.getsource(SB.BwrapSandboxDispatcher._dispatch_bwrap_git)
+    assert "_validate_git_argv" in src, (
+        "bwrap backend must validate git argv through _validate_git_argv"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Environment / credential stripping
 # ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 schema_version: "1"
 id: snow-indy-grab
 input: |
-  The rider reaches between the feet with the rear hand and grabs the heel-side edge of the board mid-air.
+  The rider reaches between the feet with the rear hand and grabs the toe-side edge of the board mid-air.
 expected: "indy grab"
 tags:
   - snowboarding

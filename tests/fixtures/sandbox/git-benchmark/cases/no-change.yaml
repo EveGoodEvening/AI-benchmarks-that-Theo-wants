@@ -5,6 +5,21 @@ input:
   fixture: "fixtures/repo"
   script:
     - command: git
+      argv: ["init", "-q", "-b", "main"]
+      cwd: "."
+    - command: git
+      argv: ["config", "user.name", "fixture"]
+      cwd: "."
+    - command: git
+      argv: ["config", "user.email", "fixture@ai-bench.local"]
+      cwd: "."
+    - command: git
+      argv: ["add", "README.md"]
+      cwd: "."
+    - command: git
+      argv: ["commit", "-q", "-m", "initial fixture"]
+      cwd: "."
+    - command: git
       argv: ["status", "--short"]
       cwd: "."
 expected: "state-check-stub"

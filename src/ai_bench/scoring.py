@@ -732,23 +732,38 @@ class RepoStateVerifier:
                 continue
             contains = assertion.get("contains") if assertion else None
             if contains is not None:
-                # The snapshot's file_tree is path-only; content assertions
-                # are checked against the diff when available, otherwise
-                # recorded as unchecked (not a mismatch) since the snapshot
-                # does not carry file contents.
-                if contains and contains not in state.diff and not _diff_has_file(state.diff, path):
-                    mismatches.append(
-                        f"file {path!r} expected to contain {contains!r} but "
-                        "the snapshot diff does not show it"
-                    )
+                # C07 review: enforce contains, never silently pass it.  The
+                # snapshot carries a path-only file_tree plus a unified diff;
+                # content can only be verified when the file appears in the
+                # diff.  If the file is present but not in the diff, the
+                # assertion is unverifiable from the snapshot and MUST fail
+                # closed rather than pass unchecked.
+                if contains:
+                    if _diff_has_file(state.diff, path):
+                        if not _diff_file_contains(state.diff, path, contains):
+                            mismatches.append(
+                                f"file {path!r} expected to contain "
+                                f"{contains!r} but the snapshot diff does not"
+                            )
+                    else:
+                        mismatches.append(
+                            f"file {path!r} expected to contain {contains!r} "
+                            "but its content is not available in the snapshot "
+                            "diff; the assertion cannot be verified and fails "
+                            "closed"
+                        )
             sha = assertion.get("sha256") if assertion else None
             if sha is not None:
-                # Content hashes cannot be verified from a path-only tree; we
-                # record this as an unchecked detail rather than a false
-                # mismatch, because the C02 RepoState does not carry content
-                # hashes. C08 fixtures that need content checks should use the
-                # diff or git status instead.
-                details.setdefault("unchecked_sha256", []).append(path)
+                # C07 review: sha256 content assertions cannot be verified
+                # from a path-only file_tree + unified diff (the C02 RepoState
+                # does not carry content hashes).  Rather than silently passing
+                # an unchecked assertion, fail closed so fixtures cannot claim
+                # a content hash that was never actually checked.
+                mismatches.append(
+                    f"file {path!r} sha256 assertion cannot be verified from "
+                    "the repo-state snapshot (no content hashes available); "
+                    "use a contains/diff assertion instead"
+                )
 
         for path in spec.absent:
             if path in tree:
@@ -779,6 +794,31 @@ def _diff_has_file(diff: str, path: str) -> bool:
     needle = f" {path}\n"
     needle2 = f" a/{path}\n"
     return needle in diff or needle2 in diff or f"+++ b/{path}" in diff
+
+
+def _diff_file_contains(diff: str, path: str, needle: str) -> bool:
+    """Return True if the added/modified lines for ``path`` contain ``needle``.
+
+    Walks the unified diff and, for the hunk(s) belonging to ``path``, checks
+    added lines (``+``-prefixed, excluding ``+++`` headers) for ``needle``.
+    This enforces a ``contains`` assertion against the only content the
+    snapshot carries.
+    """
+    in_file = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            in_file = (f" b/{path}" in line) or (f" a/{path}" in line) or line.endswith(f" {path}")
+        elif line.startswith("--- ") or line.startswith("+++ "):
+            # header lines belong to the current file context
+            if line.startswith("+++ ") and f"b/{path}" in line:
+                in_file = True
+            continue
+        elif line.startswith("@@"):
+            continue
+        elif in_file and line.startswith("+") and not line.startswith("+++"):
+            if needle in line[1:]:
+                return True
+    return False
 
 
 def _check_git(git: Mapping[str, Any], state: RepoState) -> list[str]:

@@ -151,6 +151,72 @@ class TestRepoStateVerifier:
         assert r1 == r2
 
 
+def test_contains_assertion_passes_when_diff_has_matching_content() -> None:
+    """contains is enforced against the snapshot diff: matching content passes."""
+    verifier = S.RepoStateVerifier()
+    spec = T.StateCheckSpec(
+        files={"notes.md": {"exists": True, "contains": "sandbox commit"}},
+    )
+    state = _repo_state(
+        file_tree=("README.md", "notes.md"),
+        diff="diff --git a/notes.md b/notes.md\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+sandbox commit\n",
+    )
+    result = verifier.check(spec, state, {})
+    assert result.verdict == "pass", result.reason
+
+
+def test_contains_assertion_fails_when_diff_lacks_content() -> None:
+    """contains is enforced: a diff that lacks the needle fails closed."""
+    verifier = S.RepoStateVerifier()
+    spec = T.StateCheckSpec(
+        files={"notes.md": {"exists": True, "contains": "NONEXISTENT"}},
+    )
+    state = _repo_state(
+        file_tree=("README.md", "notes.md"),
+        diff="diff --git a/notes.md b/notes.md\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+sandbox commit\n",
+    )
+    result = verifier.check(spec, state, {})
+    assert result.verdict == "fail"
+    assert "contain" in result.reason
+    assert "NONEXISTENT" in result.reason
+
+
+def test_contains_assertion_fails_closed_when_content_unavailable() -> None:
+    """contains must NOT silently pass when the file is present but not in the diff.
+
+    A present file whose content is not carried by the snapshot diff is
+    unverifiable; the assertion fails closed rather than passing unchecked.
+    """
+    verifier = S.RepoStateVerifier()
+    spec = T.StateCheckSpec(
+        files={"README.md": {"exists": True, "contains": "fixture"}},
+    )
+    state = _repo_state(file_tree=("README.md",), diff="")
+    result = verifier.check(spec, state, {})
+    assert result.verdict == "fail"
+    assert "cannot be verified" in result.reason or "not available" in result.reason
+
+
+def test_sha256_assertion_fails_closed_as_unsupported() -> None:
+    """sha256 assertions cannot be verified from a path-only snapshot and fail closed.
+
+    The C02 RepoState carries no content hashes, so a sha256 assertion MUST NOT
+    silently pass as an unchecked detail; it fails closed so fixtures cannot
+    claim a content hash that was never actually checked.
+    """
+    verifier = S.RepoStateVerifier()
+    spec = T.StateCheckSpec(
+        files={"notes.md": {"exists": True, "sha256": "a" * 64}},
+    )
+    state = _repo_state(file_tree=("README.md", "notes.md"))
+    result = verifier.check(spec, state, {})
+    assert result.verdict == "fail"
+    assert "sha256" in result.reason
+    assert "cannot be verified" in result.reason
+    # No unchecked_sha256 detail is recorded anymore.
+    assert "unchecked_sha256" not in result.details
+
+
 # ---------------------------------------------------------------------------
 # Runner integration: enforced dispatcher + real verifier
 # ---------------------------------------------------------------------------
@@ -492,16 +558,18 @@ def test_checked_in_sandbox_fixture_validates() -> None:
 
 
 def test_checked_in_sandbox_fixture_runs_with_real_verifier(tmp_path: Path) -> None:
-    """The checked-in sandbox fixture runs end-to-end with the real verifier."""
+    """The checked-in sandbox fixture runs end-to-end with the real verifier.
+
+    The fixture is self-sufficient: its case scripts run ``git init`` and
+    ``git config`` inside the sandbox (C07 review), so no out-of-band test
+    init or embedded ``.git`` is required.  The checked-in fixture ships
+    ordinary files only (no nested ``.git``).
+    """
     fixture = Path(__file__).parent / "fixtures" / "sandbox" / "git-benchmark"
     # Copy into tmp_path so the run-record output and any sandbox dirs do not
     # pollute the checked-in fixture tree.
     local = tmp_path / "fixture-copy"
     shutil.copytree(fixture, local)
-    # The checked-in fixture ships ordinary files only (no nested .git, which
-    # would be an embedded git repository/submodule). Initialize the git repo
-    # at runtime so the sandboxed `git commit` script has a repo to act on.
-    _git_init(local / "fixtures" / "repo")
     output = tmp_path / "record.json"
     result = R.run_benchmark(
         local,

@@ -113,6 +113,351 @@ DEFAULT_TIMEOUT_MS = 10_000
 # one child per action.  This cap is enforced for the bwrap backend's
 # subprocess dispatch and documents the policy.
 MAX_PROCESSES = 1
+# C07 review: strict git safe-subcommand/option allowlist for the in-process
+# and bwrap backends.  The dispatcher MUST NOT forward arbitrary argv to the
+# host git: a vetted subcommand set plus a vetted option set is enforced
+# before git is ever invoked.  This blocks ``-c`` config injection, alias
+# expansion, hooks/pagers/external helpers, and network-capable forms.
+#
+# Subcommands that can reach the network or spawn external helpers are
+# excluded entirely; network forms are also rejected explicitly below.
+_SAFE_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        # inspection (read-only)
+        "status", "log", "show", "diff", "blame", "shortlog", "describe",
+        "rev-parse", "rev-list", "ls-files", "ls-tree", "ls-remote",
+        "cat-file", "merge-base", "name-rev", "reflog", "for-each-ref",
+        "symbolic-ref", "show-ref", "config", "var",
+        # local mutation (no network)
+        "init", "add", "rm", "mv", "commit", "restore", "stash",
+        "branch", "checkout", "switch", "tag", "reset", "clean",
+        "merge", "rebase", "cherry-pick", "revert", "am",
+    }
+)
+
+# ``ls-remote`` is in the inspection set above for parse-friendliness but is
+# network-capable, so it is removed from the *executable* set and rejected as
+# a network form below.
+_NETWORK_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"fetch", "pull", "push", "clone", "ls-remote", "subtree",
+     "daemon", "http-fetch", "http-push", "remote", "request-pull",
+     "send-pack", "receive-pack", "upload-pack", "upload-archive",
+     "archive"}
+)
+
+# Subcommands that are safe to execute (safe set minus network forms).
+_EXECUTABLE_GIT_SUBCOMMANDS: frozenset[str] = _SAFE_GIT_SUBCOMMANDS - _NETWORK_GIT_SUBCOMMANDS
+
+# Options that are ALWAYS rejected regardless of subcommand.  These enable
+# config injection (``-c``), alias expansion (``-c alias.x=...`` or via
+# ``core.alias``), external hooks/pagers/helpers, or shell escapes.
+_FORBIDDEN_GIT_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-c", "--config-env",
+        # alias / external command execution
+        "--exec", "--exec-path",
+        # hooks / external helpers
+        "--no-hooks", "--hooks-path",
+        # pagers / external programs
+        "--pager", "--no-pager",
+        # external diff/merge tools spawn arbitrary programs
+        "--ext-diff", "--no-ext-diff",
+        # gitk / git-gui style external helpers
+        "--git-dir", "--work-tree",
+    }
+)
+
+# Per-subcommand option allowlist.  Only these options may follow the
+# subcommand; anything else is rejected.  An entry of ``"*"`` means any
+# option is allowed for that subcommand (used only for read-only inspection
+# subcommands whose options cannot reach the network or spawn helpers).
+_GIT_SUBCOMMAND_OPTIONS: dict[str, frozenset[str]] = {
+    "status": frozenset({"--short", "--porcelain", "--branch", "-s", "-b",
+                         "--long", "--null", "-z", "--ahead-behind",
+                         "--no-ahead-behind", "--untracked-files", "-u",
+                         "--ignored", "--ignored=traditional", "--column",
+                         "--no-column", "--find-renames", "-M", "--renames",
+                         "--no-renames"}),
+    "log": frozenset({"--oneline", "--pretty", "--format", "--abbrev-commit",
+                      "--no-abbrev", "--max-count", "-n", "--skip",
+                      "--since", "--until", "--author", "--grep",
+                      "--all", "--branches", "--tags", "--remotes",
+                      "--no-remotes", "--topo-order", "--date-order",
+                      "--reverse", "--no-merges", "--merges", "--first-parent",
+                      "--stat", "--shortstat", "--name-only", "--name-status",
+                      "--numstat", "--patch", "-p", "--no-patch",
+                      "--show-signature", "--graph", "--decorate",
+                      "--source", "--mailmap", "--no-mailmap", "-z"}),
+    "show": frozenset({"--stat", "--shortstat", "--name-only", "--name-status",
+                       "--numstat", "--patch", "-p", "--no-patch",
+                       "--pretty", "--format", "--abbrev-commit",
+                       "--no-abbrev", "--oneline", "--source", "-z"}),
+    "diff": frozenset({"--stat", "--shortstat", "--name-only", "--name-status",
+                       "--numstat", "--patch", "-p", "--no-patch",
+                       "--cached", "--staged", "--no-index", "--quiet", "-q",
+                       "--exit-code", "--find-renames", "-M", "--no-renames",
+                       "--abbrev", "--no-abbrev", "--raw", "--text", "-a",
+                       "--ignore-space-change", "--ignore-all-space",
+                       "--ignore-blank-lines", "--word-diff", "--color",
+                       "--no-color", "--word-diff-regex", "-z"}),
+    "blame": frozenset({"--porcelain", "--line-porcelain", "--incremental",
+                        "--root", "--show-stats", "-L", "--before", "--after",
+                        "--reverse", "--abbrev", "--no-abbrev", "-w", "-C",
+                        "-M", "--color-by-age", "--color-lines", "-t", "-s",
+                        "-e", "--show-email", "--show-name", "--show-number",
+                        "-n", "-l", "--minimal", "-c", "--cc"}),
+    "shortlog": frozenset({"-s", "-n", "--numbered", "--summary",
+                           "--email", "-e", "--group", "--no-merges",
+                           "--all", "--branches", "--tags", "--remotes"}),
+    "describe": frozenset({"--tags", "--all", "--contains", "--abbrev",
+                           "--candidates", "--debug", "--long", "--always",
+                           "--first-parent", "--dirty", "--broken"}),
+    "rev-parse": frozenset({"--short", "--verify", "--quiet", "-q",
+                            "--git-dir", "--show-toplevel", "--is-inside-work-tree",
+                            "--is-inside-git-dir", "--is-bare-repository",
+                            "--show-prefix", "--show-cdup", "--absolute-git-dir",
+                            "--abbrev-ref", "--symbolic-full-name",
+                            "--default", "--revs-only", "--no-revs",
+                            "--flags", "--no-flags", "--sq", "--sq-quote",
+                            "--git-path", "--show-superproject-working-tree"}),
+    "rev-list": frozenset({"--count", "--all", "--branches", "--tags",
+                           "--remotes", "--max-count", "-n", "--skip",
+                           "--since", "--until", "--author", "--grep",
+                           "--no-merges", "--merges", "--first-parent",
+                           "--topo-order", "--date-order", "--reverse",
+                           "--objects", "--objects-edge", "--quiet", "-q"}),
+    "ls-files": frozenset({"--cached", "--modified", "--deleted", "--others",
+                           "--ignored", "--stage", "--unmerged", "-u", "-z",
+                           "--exclude-standard", "--full-name", "--abbrev",
+                           "--no-abbrev", "--error-unmatch", "--exclude",
+                           "--exclude-from", "-x", "-X", "-i", "-k", "-m",
+                           "-d", "-o", "-c", "--debug"}),
+    "ls-tree": frozenset({"-d", "-r", "-t", "-l", "--long", "--name-only",
+                          "--name-status", "-z", "--abbrev", "--full-name",
+                          "--full-tree", "--object-only"}),
+    "cat-file": frozenset({"-t", "-s", "-e", "-p", "--batch", "--batch-check",
+                           "--batch-all-objects", "--text", "--textconv",
+                           "--filters", "--path", "--buffer", "-z"}),
+    "merge-base": frozenset({"-a", "--all", "--is-ancestor", "--independent",
+                             "--fork-point", "--octopus"}),
+    "name-rev": frozenset({"--tags", "--all", "--name-only", "--stdin",
+                           "--refs", "--no-undefined", "--always", "--undefined"}),
+    "reflog": frozenset({"show", "expire", "delete", "exists", "--all",
+                         "--upstream", "--rewrite", "--no-rewrite",
+                         "--expire", "--expire-unreachable", "--dry-run",
+                         "-n", "--pretty", "--format", "--oneline"}),
+    "for-each-ref": frozenset({"--count", "--format", "--python", "--shell",
+                               "--perl", "--tcl", "--points-at", "--merged",
+                               "--no-merged", "--contains", "--no-contains",
+                               "--sort", "--all", "--exclude", "--stdin",
+                               "--debug"}),
+    "symbolic-ref": frozenset({"-d", "--delete", "-q", "--quiet", "--short",
+                               "-m", "--message", "--ref"}),
+    "show-ref": frozenset({"--head", "--tags", "--heads", "--verify", "-s",
+                           "--hash", "--abbrev", "--dereference", "-d", "-q",
+                           "--quiet", "--all", "--exclude-existing"}),
+    "config": frozenset({"--file", "-f", "--global", "--local", "--system",
+                         "--list", "-l", "--get", "--get-all", "--get-regexp",
+                         "--get-urlmatch", "--add", "--unset", "--unset-all",
+                         "--replace-all", "--rename-section", "--remove-section",
+                         "-e", "--edit", "--null", "-z", "--name-only",
+                         "--includes", "--no-includes", "--bool", "--int",
+                         "--bool-or-int", "--path", "--type", "--show-origin",
+                         "--show-scope", "--default", "--get-revpath"}),
+    "var": frozenset({"-l", "--list"}),
+    "init": frozenset({"-q", "--quiet", "--bare", "--template", "--shared",
+                       "-b", "--initial-branch", "--separate-git-dir",
+                       "--object-format"}),
+    "add": frozenset({"-A", "--all", "-u", "--update", "-f", "--force",
+                      "-i", "--interactive", "-p", "--patch", "-N",
+                      "--intent-to-add", "-n", "--dry-run", "--renormalize",
+                      "-v", "--verbose", "--ignore-removal", "--no-ignore-removal",
+                      "--chmod", "-z"}),
+    "rm": frozenset({"-f", "--force", "-r", "--cached", "-n", "--dry-run",
+                     "-q", "--quiet", "--ignore-unmatch", "-v", "--verbose", "-z"}),
+    "mv": frozenset({"-f", "--force", "-k", "-n", "--dry-run", "-v", "--verbose",
+                     "--sparse", "--pathspec-from-file"}),
+    "commit": frozenset({"-m", "--message", "-a", "--all", "-q", "--quiet",
+                         "-v", "--verbose", "--amend", "--no-edit", "-e",
+                         "--edit", "--allow-empty", "--allow-empty-message",
+                         "--no-verify", "--verify", "-s", "--signoff",
+                         "--no-signoff", "--author", "--date", "--cleanup",
+                         "--no-status", "--status", "-z", "--no-verify",
+                         "--reset-author", "--trailer", "-F", "--file",
+                         "-C", "--reuse-message", "-c", "--reedit-message",
+                         "--no-post-rewrite", "--post-rewrite"}),
+    "restore": frozenset({"-s", "--source", "-W", "--worktree", "-S",
+                          "--staged", "-p", "--patch", "--ours", "--theirs",
+                          "-m", "--merge", "--conflict", "--ignore-unmerged",
+                          "--no-ignore-unmerged", "--ignore-skip-worktree-bits",
+                          "--overlay", "--no-overlay", "-q", "--quiet",
+                          "--progress", "--no-progress", "-z"}),
+    "stash": frozenset({"push", "pop", "apply", "drop", "list", "show",
+                        "branch", "clear", "create", "store", "save",
+                        "--keep-index", "--no-keep-index", "--include-untracked",
+                        "-u", "--all", "-p", "--patch", "-q", "--quiet",
+                        "-m", "--message", "--staged", "-S", "-n",
+                        "--no-index", "--index"}),
+    "branch": frozenset({"-d", "--delete", "-D", "--list", "-m", "--move",
+                         "-c", "--copy", "-r", "--remotes", "-a", "--all",
+                         "-v", "--verbose", "-q", "--quiet", "-f", "--force",
+                         "--set-upstream-to", "--unset-upstream", "-u",
+                         "--set-upstream", "--track", "--no-track",
+                         "--contains", "--no-contains", "--merged",
+                         "--no-merged", "--points-at", "--column",
+                         "--no-column", "-t", "--edit-description",
+                         "--abbrev", "--no-abbrev", "-i", "--ignore-case",
+                         "--sort", "--format", "--show-current", "-z"}),
+    "checkout": frozenset({"-b", "--branch", "-B", "-q", "--quiet", "-f",
+                           "--force", "--track", "--no-track", "--detach",
+                           "--orphan", "-m", "--merge", "-p", "--patch",
+                           "--ours", "--theirs", "--conflict", "--no-progress",
+                           "--progress", "-t", "--theirs", "--ours", "--no-write-tree",
+                           "--write-tree", "--recurse-submodules",
+                           "--no-recurse-submodules", "--overlay",
+                           "--no-overlay", "--pathspec-from-file", "-z"}),
+    "switch": frozenset({"-c", "--create", "-C", "--force-create", "-d",
+                         "--detach", "-q", "--quiet", "--track", "--no-track",
+                         "-m", "--merge", "--guess", "--no-guess", "-t",
+                         "--discard-changes", "--recurse-submodules",
+                         "--no-recurse-submodules", "--orphan", "-z"}),
+    "tag": frozenset({"-l", "--list", "-d", "--delete", "-v", "--verify",
+                      "-a", "--annotate", "-s", "--sign", "-f", "--force",
+                      "-m", "--message", "-F", "--file", "-e", "--edit",
+                      "-u", "--local-user", "-n", "--column", "--no-column",
+                      "--contains", "--no-contains", "--merged", "--no-merged",
+                      "--points-at", "--sort", "--format", "--cleanup",
+                      "--create-reflog", "-z"}),
+    "reset": frozenset({"--soft", "--mixed", "--hard", "--merge", "--keep",
+                        "-q", "--quiet", "-p", "--patch", "-N",
+                        "--intent-to-add", "--pathspec-from-file", "-z"}),
+    "clean": frozenset({"-d", "-f", "--force", "-i", "--interactive", "-n",
+                        "--dry-run", "-q", "--quiet", "-x", "-X", "-e",
+                        "--exclude", "--dry-run", "--no-recursive",
+                        "--recursive", "-z"}),
+    "merge": frozenset({"-q", "--quiet", "-v", "--verbose", "--no-ff",
+                        "--ff", "--ff-only", "--no-commit", "--commit",
+                        "--edit", "-e", "--no-edit", "--no-stat", "--stat",
+                        "-s", "--strategy", "-X", "--strategy-option",
+                        "-m", "--message", "-F", "--file", "--rerere-autoupdate",
+                        "--no-rerere-autoupdate", "--abort", "--continue",
+                        "--no-verify", "--verify", "--no-progress", "--progress",
+                        "-z"}),
+    "rebase": frozenset({"-i", "--interactive", "--onto", "--continue",
+                         "--abort", "--skip", "--quit", "--edit-todo",
+                         "--show-current-patch", "-q", "--quiet", "-v",
+                         "--verbose", "--stat", "--no-stat", "--autostash",
+                         "--no-autostash", "--no-ff", "--ff", "--no-verify",
+                         "--verify", "-m", "--merge", "--no-keep-empty",
+                         "--keep-empty", "--root", "-x", "--exec",
+                         "--strategy", "-s", "--strategy-option", "-X",
+                         "--rerere-autoupdate", "--no-rerere-autoupdate",
+                         "--gpg-sign", "--no-gpg-sign", "-z"}),
+    "cherry-pick": frozenset({"-e", "--edit", "--no-commit", "-n", "-s",
+                              "--signoff", "-x", "--ff", "--no-ff",
+                              "--continue", "--abort", "--quit", "--skip",
+                              "--allow-empty", "--allow-empty-message",
+                              "--keep-redundant-commits", "--strategy", "-s",
+                              "--strategy-option", "-X", "-m", "--mainline",
+                              "--gpg-sign", "--no-gpg-sign", "-z"}),
+    "revert": frozenset({"-e", "--edit", "--no-edit", "--no-commit", "-n",
+                         "-s", "--signoff", "--continue", "--abort",
+                         "--quit", "--skip", "--strategy", "-s",
+                         "--strategy-option", "-X", "-m", "--mainline",
+                         "--gpg-sign", "--no-gpg-sign", "-z"}),
+    "am": frozenset({"-s", "--signoff", "-3", "--3way", "--keep", "--no-keep",
+                     "-q", "--quiet", "-v", "--verbose", "-c", "--scissors",
+                     "--no-scissors", "--utf8", "--no-utf8", "--no-utf8",
+                     "--ignore-space-change", "--ignore-whitespace",
+                     "--whitespace", "--abort", "--continue", "-r", "--resolved",
+                     "--skip", "--show-current-patch", "--committer-date-is-author-date",
+                     "--ignore-date", "--ignore-date", "--gpg-sign", "--no-gpg-sign",
+                     "-z"}),
+}
+
+
+def _validate_git_argv(argv: tuple[str, ...]) -> str | None:
+    """Validate a git argv against the strict safe allowlist.
+
+    Returns a violation reason string if the argv is rejected, else ``None``.
+    The check runs BEFORE git is invoked so no arbitrary argv is ever passed
+    to the host git binary.  Rejected classes:
+
+    * global git options before the subcommand (``-c``, ``--config-env``,
+      ``--git-dir``, ``--work-tree``, ``--exec``, hooks/pagers, etc.) which
+      enable config injection, alias expansion, or external helpers;
+    * subcommands outside the executable safe set (network forms, helpers,
+      plumbing that spawns external programs);
+    * options after the subcommand that are not in the per-subcommand
+      allowlist (this catches ``-c`` after a subcommand too, plus any option
+      that could enable a pager/external helper);
+    * explicit URL / ``git@`` / ``ssh://`` arguments (network targets).
+
+    This is the single chokepoint used by both the in-process and bwrap
+    backends, so the two cannot drift.
+    """
+    if not argv:
+        return "git requires a subcommand"
+    # Walk leading global options until we hit the subcommand.  Any global
+    # option is rejected: the allowlist permits NO pre-subcommand options.
+    idx = 0
+    while idx < len(argv) and argv[idx].startswith("-"):
+        opt = argv[idx]
+        if opt in _FORBIDDEN_GIT_OPTIONS:
+            return (
+                f"git global option {opt!r} is forbidden: it enables config "
+                "injection, alias expansion, or external helpers"
+            )
+        return (
+            f"git global option {opt!r} is not allowed; the sandbox permits "
+            "no options before the git subcommand"
+        )
+    sub = argv[idx]
+    rest = argv[idx + 1:]
+    # Subcommand allowlist.
+    if sub in _NETWORK_GIT_SUBCOMMANDS:
+        return (
+            f"git {sub} denied: outbound network access is not allowed "
+            "in the sandbox"
+        )
+    if sub not in _EXECUTABLE_GIT_SUBCOMMANDS:
+        return (
+            f"git subcommand {sub!r} is not in the sandbox safe-subcommand "
+            "allowlist"
+        )
+    # Reject any explicit URL / network target in the remaining args.
+    for arg in rest:
+        if "://" in arg or arg.startswith("git@") or arg.startswith("ssh://"):
+            return (
+                f"git network target {arg!r} denied: outbound network "
+                "access is not allowed in the sandbox"
+            )
+    # Per-subcommand option allowlist.  Positional args (non-dash-prefixed)
+    # are permitted and confined by the path checks elsewhere; options must
+    # be in the allowlist and must not be a forbidden option.
+    allowed_opts = _GIT_SUBCOMMAND_OPTIONS.get(sub)
+    if allowed_opts is None:
+        return (
+            f"git subcommand {sub!r} has no option allowlist defined; "
+            "refusing to run with unvetted options"
+        )
+    for arg in rest:
+        if not arg.startswith("-"):
+            continue
+        # Reject ``--option=value`` by checking the ``--option`` stem against
+        # the forbidden set and the allowlist.
+        stem = arg.split("=", 1)[0]
+        if stem in _FORBIDDEN_GIT_OPTIONS or arg in _FORBIDDEN_GIT_OPTIONS:
+            return (
+                f"git option {arg!r} is forbidden: it enables config "
+                "injection, alias expansion, or external helpers"
+            )
+        if stem not in allowed_opts and arg not in allowed_opts:
+            return (
+                f"git option {arg!r} is not in the allowlist for "
+                f"subcommand {sub!r}"
+            )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -276,17 +621,52 @@ def _confine_lexical(root: Path, candidate: Path) -> Path:
 
 
 def _check_symlink_escape(root: Path, path: Path) -> None:
-    """Reject ``path`` if it is a symlink that resolves outside ``root``."""
-    if not path.exists() and not path.is_symlink():
+    """Reject ``path`` or any ancestor of it that resolves outside ``root``.
+
+    A write to ``link/notes.md`` where ``link`` is a symlink to ``/etc`` would
+    otherwise escape the sandbox even though ``notes.md`` does not yet exist
+    (the old check returned early for non-existent paths).  We walk every
+    existing ancestor of ``path`` and reject any symlink whose resolved target
+    is outside ``root``; this catches ancestor-escape before any file or
+    directory is created/written through the symlink.
+    """
+    root_resolved = root.resolve()
+    # If path is the root itself, there are no ancestors under root to walk.
+    if path == root_resolved:
         return
-    try:
-        real = path.resolve()
-        root_resolved = root.resolve()
-        real.relative_to(root_resolved)
-    except ValueError:
-        raise BoundaryViolation(
-            f"symlink {path} resolves outside the sandbox root"
-        ) from None
+    # Check the path itself if it exists or is a symlink.
+    if path.exists() or path.is_symlink():
+        try:
+            path.resolve().relative_to(root_resolved)
+        except ValueError:
+            raise BoundaryViolation(
+                f"symlink {path} resolves outside the sandbox root"
+            ) from None
+    # Walk ancestors that are strictly under ``root_resolved``: a symlinked
+    # directory ancestor inside the sandbox can redirect a write of a
+    # not-yet-existing path outside the sandbox.  We stop at ``root_resolved``
+    # and never check it or anything above it (those are the boundary, not
+    # escapes).  ``path`` itself is already checked above.
+    ancestor = path.parent
+    while ancestor != ancestor.parent:
+        if ancestor == root_resolved:
+            return
+        # If the ancestor is not lexically under root, stop: the confinement
+        # was already enforced by _confine_lexical, and we must not flag the
+        # root's own parent as an escape.
+        try:
+            ancestor.relative_to(root_resolved)
+        except ValueError:
+            return
+        if ancestor.exists() or ancestor.is_symlink():
+            try:
+                ancestor.resolve().relative_to(root_resolved)
+            except ValueError:
+                raise BoundaryViolation(
+                    f"symlink ancestor {ancestor} of {path} resolves outside "
+                    "the sandbox root"
+                ) from None
+        ancestor = ancestor.parent
 
 
 # ---------------------------------------------------------------------------
@@ -664,28 +1044,16 @@ class InProcessSandboxDispatcher:
         env_overrides: Mapping[str, str],
         timeout_ms: int,
     ) -> tuple[int, str, str]:
-        if not argv:
-            return 1, "", "git requires a subcommand"
+        # C07 review: validate the full argv against the strict safe
+        # subcommand/option allowlist BEFORE invoking host git.  This is the
+        # single chokepoint that prevents arbitrary argv (``-c`` config
+        # injection, alias expansion, hooks/pagers/external helpers, network
+        # forms) from reaching the host git binary.
+        violation = _validate_git_argv(argv)
+        if violation is not None:
+            raise BoundaryViolation(violation)
         sub = argv[0]
         rest = argv[1:]
-
-        # C07.3: deny network-reaching git subcommands. Attempted network
-        # access fails fast and is recorded as a boundary violation.
-        network_subs = {"fetch", "pull", "push", "clone", "ls-remote",
-                        "submodule update", "remote"}
-        if sub in network_subs or (sub == "submodule" and rest and rest[0] == "update"):
-            raise BoundaryViolation(
-                f"git {sub} denied: outbound network access is not allowed "
-                "in the sandbox"
-            )
-        # Reject any explicit URL argument (e.g. `git clone <url>` already
-        # caught above, but `git fetch <url>` or custom remotes too).
-        for arg in rest:
-            if "://" in arg or arg.startswith("git@") or arg.startswith("ssh://"):
-                raise BoundaryViolation(
-                    f"git network target {arg!r} denied: outbound network "
-                    "access is not allowed in the sandbox"
-                )
 
         # Confine cwd.
         cwd_path = _confine_relative(sandbox.root, cwd)
@@ -697,7 +1065,7 @@ class InProcessSandboxDispatcher:
             config=self.config,
             overrides=env_overrides,
         )
-        # C07.3: ensure no host credential/config paths leak via env.
+        # C07.3: ensure no host credential/config paths leak via args.
         self._reject_credential_path_args(rest, sandbox.root)
 
         timeout_s = max(1, timeout_ms / 1000.0)
@@ -1006,24 +1374,18 @@ class BwrapSandboxDispatcher:
             return self._inner._violation_row(
                 action, cwd, argv, env_overrides, _ViolationRecord(reason), start
             )
-        if not argv:
-            return self._inner._error_row(
-                action, cwd, argv, env_overrides, "git requires a subcommand", start
+        # C07 review: validate the full argv against the strict safe
+        # subcommand/option allowlist BEFORE invoking git inside bwrap.  The
+        # bwrap backend shares the same chokepoint as the in-process backend
+        # so the two cannot drift on what argv reaches host git.
+        violation = _validate_git_argv(argv)
+        if violation is not None:
+            return self._inner._violation_row(
+                action, cwd, argv, env_overrides,
+                _ViolationRecord(violation), start,
             )
         sub = argv[0]
         rest = argv[1:]
-        network_subs = {"fetch", "pull", "push", "clone", "ls-remote", "remote"}
-        if sub in network_subs or (sub == "submodule" and rest and rest[0] == "update"):
-            reason = f"git {sub} denied: outbound network access is not allowed"
-            return self._inner._violation_row(
-                action, cwd, argv, env_overrides, _ViolationRecord(reason), start
-            )
-        for arg in rest:
-            if "://" in arg or arg.startswith("git@") or arg.startswith("ssh://"):
-                reason = f"git network target {arg!r} denied"
-                return self._inner._violation_row(
-                    action, cwd, argv, env_overrides, _ViolationRecord(reason), start
-                )
 
         cwd_path = _confine_relative(sandbox.root, cwd)
         _check_symlink_escape(sandbox.root, cwd_path)
@@ -1046,7 +1408,6 @@ class BwrapSandboxDispatcher:
             "--tmpfs", "/tmp",
             "--bind", str(sandbox.root.resolve()), str(sandbox.root.resolve()),
             "--unshare-all",
-            "--share-net",
             "--die-with-parent",
             "--new-session",
             "git", sub, *rest,

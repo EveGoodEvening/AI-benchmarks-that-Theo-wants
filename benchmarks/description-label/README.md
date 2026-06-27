@@ -47,7 +47,7 @@ unambiguous; no LLM judge is used.
 
 Cases tagged `smoke` form the smoke subset selectable with
 `ai-bench run benchmarks/description-label --tag smoke --model stub`. There are
-4 `smoke`-tagged cases covering one trivial, one easy, and two medium
+4 `smoke`-tagged cases covering one trivial, two easy, and one medium
 examples across all three sports.
 
 ## Limitations

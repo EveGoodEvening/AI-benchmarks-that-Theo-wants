@@ -134,6 +134,58 @@ def test_symlink_escape_is_rejected(tmp_path: Path) -> None:
     assert "symlink" in (row.violation_reason or "").lower() or "outside" in (row.violation_reason or "")
 
 
+
+def test_symlink_ancestor_escape_write_is_rejected(tmp_path: Path) -> None:
+    """Regression: file.write through a symlinked directory ancestor is rejected.
+
+    A write to ``link/notes.md`` where ``link`` is a symlink to ``/etc`` would
+    escape the sandbox even though ``notes.md`` does not yet exist.  The
+    ancestor walk in ``_check_symlink_escape`` catches this before any file or
+    directory is created through the symlink, so the write fails closed and is
+    recorded as a boundary violation.
+    """
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    link = root / "link"
+    os.symlink(outside, link)
+    dispatcher = SB.InProcessSandboxDispatcher()
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="file.write",
+        argv=("link/notes.md", "escaped\n"),
+        cwd=".",
+    )
+    row = dispatcher.dispatch(action, sandbox=handle)
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    reason = (row.violation_reason or "").lower()
+    assert "ancestor" in reason or "symlink" in reason or "outside" in reason
+    # Nothing was written through the symlink.
+    assert not (outside / "notes.md").exists()
+    assert not (root / "link" / "notes.md").exists()
+
+
+def test_symlink_ancestor_escape_mkdir_is_rejected(tmp_path: Path) -> None:
+    """file.mkdir through a symlinked directory ancestor is rejected too."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    link = root / "link"
+    os.symlink(outside, link)
+    dispatcher = SB.InProcessSandboxDispatcher()
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="file.mkdir",
+        argv=("link/sub",),
+        cwd=".",
+    )
+    row = dispatcher.dispatch(action, sandbox=handle)
+    assert row.sandbox_boundary_violation is True
+    assert not (outside / "sub").exists()
+
 def test_in_sandbox_relative_path_write_succeeds(tmp_path: Path) -> None:
     root = tmp_path / "sandbox"
     root.mkdir()
