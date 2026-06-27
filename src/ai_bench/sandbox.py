@@ -994,12 +994,15 @@ def _git_metadata_write_violation(root: Path, path: Path) -> str | None:
 
     Agent-authored git metadata is a delayed configuration/object-channel: a
     later allowlisted git command would consume it before argv validation can
-    help.  Raw writes to config files and object alternates are denied; use the
-    narrow git allowlist for safe identity config instead.
+    help.  Raw writes to config files, commondir files, and object alternates
+    are denied; use the narrow git allowlist for safe identity config instead.
     """
     config_violation = _git_config_write_violation(root, path)
     if config_violation is not None:
         return config_violation
+    commondir_violation = _git_commondir_write_violation(root, path)
+    if commondir_violation is not None:
+        return commondir_violation
     return _git_alternates_write_violation(root, path)
 
 
@@ -1013,6 +1016,24 @@ def _git_config_write_violation(root: Path, path: Path) -> str | None:
             )
     return None
 
+
+
+def _git_commondir_write_violation(root: Path, path: Path) -> str | None:
+    """Return a violation if ``file.write`` targets git commondir metadata."""
+    for rel in _sandbox_relative_candidates(root, path):
+        if _is_git_commondir_path(rel):
+            return _git_commondir_violation_reason(rel)
+    try:
+        commondir = _local_git_commondir_path(root, root.resolve())
+    except BoundaryViolation:
+        return None
+    if _same_sandbox_path(path, commondir):
+        try:
+            rel = commondir.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = str(commondir)
+        return _git_commondir_violation_reason(rel)
+    return None
 
 def _git_alternates_write_violation(root: Path, path: Path) -> str | None:
     """Return a violation if ``file.write`` targets git object alternates."""
@@ -1049,14 +1070,18 @@ def _git_metadata_files_violation(root: Path) -> str | None:
     """Reject agent-writable git metadata before invoking git.
 
     This preflight runs before every git subprocess in both backends.  It
-    rejects sandbox-global config, unsafe local config, and object alternates
-    in the resolved gitdir.  Alternates must fail closed because they can make
-    otherwise allowlisted git commands read object databases outside the
-    sandbox boundary.
+    rejects sandbox-global config, unsafe local config, commondir indirection,
+    and object alternates in the resolved gitdir.  Commondir files and
+    alternates must fail closed because they can make otherwise allowlisted git
+    commands read config, refs, or object databases outside the sandbox
+    boundary.
     """
     config_violation = _git_config_files_violation(root)
     if config_violation is not None:
         return config_violation
+    commondir_violation = _git_commondir_files_violation(root)
+    if commondir_violation is not None:
+        return commondir_violation
     return _git_alternates_files_violation(root)
 
 
@@ -1093,6 +1118,32 @@ def _git_config_files_violation(root: Path) -> str | None:
     return None
 
 
+
+def _git_commondir_files_violation(root: Path) -> str | None:
+    """Reject existing git commondir metadata before invoking git.
+
+    C07 deliberately denies ``commondir`` outright instead of supporting linked
+    worktree common-dir indirection: an agent-controlled commondir file can
+    redirect git to config, refs, and object metadata outside the sandbox before
+    any argv-level policy can help.
+    """
+    root_resolved = root.resolve()
+    try:
+        commondir = _local_git_commondir_path(root, root_resolved)
+    except BoundaryViolation as exc:
+        return str(exc)
+    if commondir.exists() or commondir.is_symlink():
+        try:
+            _check_symlink_escape(root, commondir)
+        except BoundaryViolation as exc:
+            return str(exc)
+        try:
+            rel = commondir.relative_to(root_resolved).as_posix()
+        except ValueError:
+            rel = str(commondir)
+        return _git_commondir_violation_reason(rel)
+    return None
+
 def _git_alternates_files_violation(root: Path) -> str | None:
     root_resolved = root.resolve()
     try:
@@ -1111,6 +1162,14 @@ def _git_alternates_files_violation(root: Path) -> str | None:
         return _git_alternates_violation_reason(rel)
     return None
 
+
+
+def _git_commondir_violation_reason(path: str) -> str:
+    return (
+        f"git commondir metadata file {path!r} is denied; commondir can make "
+        "allowlisted git commands read config, refs, or objects outside the "
+        "sandbox"
+    )
 
 def _local_git_dir_path(root: Path, root_resolved: Path) -> Path:
     git_entry = root_resolved / ".git"
@@ -1157,6 +1216,10 @@ def _local_git_config_path(root: Path, root_resolved: Path) -> Path:
     return _local_git_dir_path(root, root_resolved) / "config"
 
 
+
+def _local_git_commondir_path(root: Path, root_resolved: Path) -> Path:
+    return _local_git_dir_path(root, root_resolved) / "commondir"
+
 def _local_git_alternates_path(root: Path, root_resolved: Path) -> Path:
     return _local_git_dir_path(root, root_resolved) / "objects" / "info" / "alternates"
 
@@ -1179,6 +1242,13 @@ def _is_agent_writable_git_config_path(rel: str) -> bool:
         return True
     return len(parts) >= 2 and parts[-2:] == (".git", "config")
 
+
+
+def _is_git_commondir_path(rel: str) -> bool:
+    parts = tuple(Path(rel).parts)
+    return len(parts) >= 2 and parts[-1] == "commondir" and any(
+        part == ".git" or part.endswith(".git") for part in parts[:-1]
+    )
 
 def _is_git_alternates_path(rel: str) -> bool:
     parts = tuple(Path(rel).parts)

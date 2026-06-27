@@ -340,6 +340,37 @@ def test_file_write_rejects_agent_writable_git_config_files(tmp_path: Path) -> N
         assert not (root / target).exists(), target
 
 
+def test_file_write_rejects_git_commondir_metadata(tmp_path: Path) -> None:
+    """Raw writes cannot arm git common-dir indirection for a later command."""
+    direct_root = tmp_path / "direct-sandbox"
+    direct_root.mkdir()
+    (direct_root / ".git").mkdir()
+    row = _dispatch(
+        direct_root,
+        "file.write",
+        (".git/commondir", "../outside-common.git\n"),
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "commondir" in (row.violation_reason or "").lower()
+    assert not (direct_root / ".git" / "commondir").exists()
+
+    gitdir_root = tmp_path / "gitdir-sandbox"
+    gitdir_root.mkdir()
+    gitdir = gitdir_root / "alt.git"
+    gitdir.mkdir()
+    (gitdir_root / ".git").write_text("gitdir: alt.git\n", encoding="utf-8")
+    row = _dispatch(
+        gitdir_root,
+        "file.write",
+        ("alt.git/commondir", "../outside-common.git\n"),
+    )
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "commondir" in (row.violation_reason or "").lower()
+    assert not (gitdir / "commondir").exists()
+
+
 def test_file_write_rejects_git_objects_alternates(tmp_path: Path) -> None:
     """Raw writes cannot arm git object alternates for a later safe command."""
     root = tmp_path / "sandbox"
@@ -406,6 +437,25 @@ def test_existing_gitdir_file_target_alternates_rejected_before_git_invocation(
     assert "alternates" in (row.violation_reason or "").lower()
 
 
+def test_existing_gitdir_file_commondir_rejected_before_git_invocation(
+    tmp_path: Path,
+) -> None:
+    """A confined gitdir's commondir file blocks before git can read outside."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    gitdir = root / "alt.git"
+    gitdir.mkdir()
+    (root / ".git").write_text("gitdir: alt.git\n", encoding="utf-8")
+    (gitdir / "commondir").write_text(
+        str(tmp_path / "outside-common.git") + "\n",
+        encoding="utf-8",
+    )
+    row = _dispatch(root, "git", ("status", "--short"))
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "commondir" in (row.violation_reason or "").lower()
+
+
 def test_bwrap_backend_rejects_existing_git_objects_alternates_before_invoke(
     tmp_path: Path,
 ) -> None:
@@ -432,13 +482,43 @@ def test_bwrap_backend_rejects_existing_git_objects_alternates_before_invoke(
     assert "alternates" in (row.violation_reason or "").lower()
 
 
+def test_bwrap_backend_rejects_existing_git_commondir_before_invoke(
+    tmp_path: Path,
+) -> None:
+    """The bwrap path rejects commondir metadata before it can spawn git."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    gitdir = root / "alt.git"
+    gitdir.mkdir()
+    (root / ".git").write_text("gitdir: alt.git\n", encoding="utf-8")
+    (gitdir / "commondir").write_text(
+        str(tmp_path / "outside-common.git") + "\n",
+        encoding="utf-8",
+    )
+    handle = _handle(root)
+    action = ToolActionRequest(
+        command="git", argv=("status", "--short"), cwd=".",
+        env_overrides={}, timeout_ms=None,
+    )
+    orig = SB._bwrap_available
+    SB._bwrap_available = lambda: True
+    try:
+        dispatcher = SB.BwrapSandboxDispatcher()
+        row = dispatcher.dispatch(action, sandbox=handle)
+    finally:
+        SB._bwrap_available = orig
+    assert row.sandbox_boundary_violation is True
+    assert row.exit_code == 126
+    assert "commondir" in (row.violation_reason or "").lower()
+
+
 def test_bwrap_backend_checks_git_metadata_before_invoke() -> None:
     """The bwrap backend runs the same git-metadata preflight as in-process."""
     import inspect
 
     src = inspect.getsource(SB.BwrapSandboxDispatcher._dispatch_bwrap_git)
     assert "_git_metadata_files_violation" in src, (
-        "bwrap backend must reject git alternates/config metadata before git"
+        "bwrap backend must reject git config/commondir/alternates metadata before git"
     )
 
 
