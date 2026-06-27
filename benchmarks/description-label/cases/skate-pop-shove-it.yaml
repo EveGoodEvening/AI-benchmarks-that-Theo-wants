@@ -1,0 +1,13 @@
+schema_version: "1"
+id: skate-pop-shove-it
+input: |
+  The rider pops the tail and scoops the back foot so the board rotates 180 degrees horizontally beneath them, staying grip-side-up, then lands on it.
+expected: "pop shove-it"
+tags:
+  - skateboarding
+  - rotation
+difficulty: easy
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

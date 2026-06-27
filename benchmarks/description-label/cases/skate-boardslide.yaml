@@ -1,0 +1,14 @@
+schema_version: "1"
+id: skate-boardslide
+input: |
+  The rider ollies over a rail and lands with the middle of the board (between the trucks) sliding perpendicular across it.
+expected: "boardslide"
+tags:
+  - skateboarding
+  - grind
+  - slide
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

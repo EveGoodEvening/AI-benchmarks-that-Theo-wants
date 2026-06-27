@@ -1,0 +1,14 @@
+schema_version: "1"
+id: snow-backflip
+input: |
+  The rider launches off a jump and rotates backward, the board traveling in a rearward somersault before landing.
+expected: "backflip"
+tags:
+  - snowboarding
+  - flip
+  - inversion
+difficulty: hard
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

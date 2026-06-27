@@ -1,0 +1,13 @@
+schema_version: "1"
+id: skate-heelflip
+input: |
+  After popping the tail, the rider slides the front foot off the heel-side edge so the board rolls over once toward the toes, then catches it in the air.
+expected: "heelflip"
+tags:
+  - skateboarding
+  - flip
+difficulty: easy
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

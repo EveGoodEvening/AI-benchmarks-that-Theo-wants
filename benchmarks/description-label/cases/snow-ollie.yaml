@@ -1,0 +1,15 @@
+schema_version: "1"
+id: snow-ollie
+input: |
+  On a snowboard, the rider shifts weight to the tail then springs off it while lifting the nose, getting airborne off flat ground without a jump.
+expected: "ollie"
+tags:
+  - snowboarding
+  - aerial
+  - smoke
+difficulty: easy
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "Same name as the skate trick; shared label is intentional."

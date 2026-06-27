@@ -1,0 +1,14 @@
+schema_version: "1"
+id: skate-hardflip
+input: |
+  A kickflip and a frontside pop shove-it happen at the same time: the board flips once while rotating 180 degrees toward the rider's toes.
+expected: "hardflip"
+tags:
+  - skateboarding
+  - flip
+  - rotation
+difficulty: hard
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

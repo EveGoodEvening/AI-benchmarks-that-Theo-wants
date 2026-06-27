@@ -1,0 +1,13 @@
+schema_version: "1"
+id: skate-impossible
+input: |
+  The rider wraps the back foot around the tail so the board flips end-over-end by rolling vertically around the foot, rather than flipping flat.
+expected: "impossible"
+tags:
+  - skateboarding
+  - flip
+difficulty: expert
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

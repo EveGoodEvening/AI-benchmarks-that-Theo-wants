@@ -1,0 +1,13 @@
+schema_version: "1"
+id: snow-tailgrab
+input: |
+  In the air the rider reaches back and grabs the tail of the snowboard with the rear hand, holding it before releasing for landing.
+expected: "tailgrab"
+tags:
+  - snowboarding
+  - grab
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

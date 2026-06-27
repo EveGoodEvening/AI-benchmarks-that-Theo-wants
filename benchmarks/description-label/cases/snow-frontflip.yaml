@@ -1,0 +1,14 @@
+schema_version: "1"
+id: snow-frontflip
+input: |
+  The rider launches off a jump and tucks forward, rotating head-over-heels toward the nose so the board travels in a forward somersault.
+expected: "frontflip"
+tags:
+  - snowboarding
+  - flip
+  - inversion
+difficulty: hard
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

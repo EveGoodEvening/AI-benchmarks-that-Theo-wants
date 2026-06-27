@@ -1,0 +1,13 @@
+schema_version: "1"
+id: surf-floater
+input: |
+  The surfer rides up onto the breaking lip of the wave and skims along the top of the falling whitewater before dropping back down the face.
+expected: "floater"
+tags:
+  - surfing
+  - lip
+difficulty: hard
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

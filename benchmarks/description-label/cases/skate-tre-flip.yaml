@@ -1,0 +1,15 @@
+schema_version: "1"
+id: skate-tre-flip
+input: |
+  A 360-degree horizontal board rotation combined with a single kickflip, all from one pop; the board spins a full turn sideways while flipping once.
+expected: "tre flip"
+tags:
+  - skateboarding
+  - flip
+  - rotation
+difficulty: hard
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "Commonly called 360 flip; the canonical short name is required."

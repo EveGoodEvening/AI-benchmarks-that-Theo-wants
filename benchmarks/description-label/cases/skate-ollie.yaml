@@ -1,0 +1,15 @@
+schema_version: "1"
+id: skate-ollie
+input: |
+  Without any flip, the rider stamps the tail down and slides the front foot up the grip to level the board in mid-air, rising with it before bringing it back down.
+expected: "ollie"
+tags:
+  - skateboarding
+  - aerial
+  - smoke
+difficulty: trivial
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "The foundational no-flip aerial."

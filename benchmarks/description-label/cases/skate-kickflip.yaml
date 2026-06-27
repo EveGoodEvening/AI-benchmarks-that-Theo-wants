@@ -1,0 +1,15 @@
+schema_version: "1"
+id: skate-kickflip
+input: |
+  The rider pops the tail against the ground and flicks the side of the board with the front foot so it flips edge-over-edge once along its long axis, then lands back on it.
+expected: "kickflip"
+tags:
+  - skateboarding
+  - flip
+  - smoke
+difficulty: easy
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "Original description of a foundational skate flip trick."

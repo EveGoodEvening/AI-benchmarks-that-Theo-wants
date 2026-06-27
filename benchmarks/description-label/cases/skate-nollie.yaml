@@ -1,0 +1,13 @@
+schema_version: "1"
+id: skate-nollie
+input: |
+  Instead of popping the tail, the rider pops off the nose with the front foot, launching the board into the air without a flip.
+expected: "nollie"
+tags:
+  - skateboarding
+  - aerial
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

@@ -1,0 +1,14 @@
+schema_version: "1"
+id: surf-snap
+input: |
+  A sharp vertical hit on the lip: the surfer smashes the board off the top of the wave and redirects back down the face in one quick motion.
+expected: "snap"
+tags:
+  - surfing
+  - turn
+  - lip
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

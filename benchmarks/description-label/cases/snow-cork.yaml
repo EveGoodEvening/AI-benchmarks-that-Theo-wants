@@ -1,0 +1,15 @@
+schema_version: "1"
+id: snow-cork-720
+input: |
+  An off-axis spin where the rider tilts sideways off the vertical while spinning two full rotations, so the rotation axis is diagonal rather than straight up.
+expected: "cork 720"
+tags:
+  - snowboarding
+  - rotation
+  - off-axis
+difficulty: expert
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "Corked spin with two full rotations."

@@ -1,0 +1,13 @@
+schema_version: "1"
+id: skate-50-50-grind
+input: |
+  The rider ollies onto a rail or ledge and slides along it with both trucks resting on the edge, then rolls off the end.
+expected: "50-50 grind"
+tags:
+  - skateboarding
+  - grind
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

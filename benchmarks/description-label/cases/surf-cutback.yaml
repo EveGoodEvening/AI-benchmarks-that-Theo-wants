@@ -1,0 +1,14 @@
+schema_version: "1"
+id: surf-cutback
+input: |
+  The surfer rides along the wave face then carves a wide turn back toward the breaking part of the wave, reversing direction to stay near the pocket of power.
+expected: "cutback"
+tags:
+  - surfing
+  - turn
+  - smoke
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

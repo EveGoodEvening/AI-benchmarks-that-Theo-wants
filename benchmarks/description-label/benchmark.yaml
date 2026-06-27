@@ -1,0 +1,41 @@
+schema_version: "1"
+id: description-label
+name: Board-sport trick description-to-label
+description: >
+  Given a plain-English description of a board-sport (skateboarding,
+  snowboarding, surfing) trick, the model must reply with the trick's
+  common name. Inspired by the shape of Theo's SkateBench: a niche-language
+  and spatial-reasoning task that sits between a syntax test, a vocabulary
+  test, and 3D rotation reasoning. All cases are original fixtures written
+  for this suite; they are not imports of SkateBench and imply no
+  endorsement from Theo.
+domain: recreation
+task_type: text
+metric:
+  verifier: exact_match
+  params:
+    case_sensitive: false
+    trim: true
+    normalize_whitespace: true
+version: "0.1.0"
+contributor:
+  name: AI-bench contributors
+  contact: https://example.org/ai-bench
+license: CC0-1.0
+case_glob: "cases/*.yaml"
+tags:
+  - recreation
+  - spatial-reasoning
+  - niche-english
+  - syntax-parsing
+status: experimental
+prompt_template:
+  version: "1"
+  template: |
+    You are given a description of a board-sport trick. Reply with only the trick's most common name, in lowercase, with no extra punctuation or explanation.
+
+    Description: {input}
+
+    Trick name:
+sampling:
+  temperature: 0.0

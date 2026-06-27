@@ -1,0 +1,13 @@
+schema_version: "1"
+id: snow-nollie
+input: |
+  The rider springs off the nose of the snowboard to leave the ground, the snow equivalent of a nollie on a skateboard.
+expected: "nollie"
+tags:
+  - snowboarding
+  - aerial
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

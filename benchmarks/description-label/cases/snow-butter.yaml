@@ -1,0 +1,14 @@
+schema_version: "1"
+id: snow-butter
+input: |
+  Pressing the nose or tail into the snow and pivoting the board around that pressed end while sliding, like a ground-level spin on one contact point.
+expected: "butter"
+tags:
+  - snowboarding
+  - flat-ground
+  - press
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

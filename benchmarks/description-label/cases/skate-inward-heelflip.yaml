@@ -1,0 +1,14 @@
+schema_version: "1"
+id: skate-inward-heelflip
+input: |
+  A heelflip combined with a backside pop shove-it: the board rolls over toward the toes while rotating 180 degrees toward the heels.
+expected: "inward heelflip"
+tags:
+  - skateboarding
+  - flip
+  - rotation
+difficulty: expert
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

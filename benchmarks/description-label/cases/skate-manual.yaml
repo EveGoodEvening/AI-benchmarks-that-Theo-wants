@@ -1,0 +1,13 @@
+schema_version: "1"
+id: skate-manual
+input: |
+  Balancing on the back two wheels only, the rider rolls forward without the tail or front wheels touching the ground for as long as possible.
+expected: "manual"
+tags:
+  - skateboarding
+  - balance
+difficulty: medium
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"

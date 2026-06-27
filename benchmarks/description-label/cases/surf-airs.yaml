@@ -1,0 +1,14 @@
+schema_version: "1"
+id: surf-airs
+input: |
+  The surfer launches off the lip of the wave into the air, separates from the water momentarily, then lands back on the face.
+expected: "air"
+tags:
+  - surfing
+  - aerial
+difficulty: hard
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "Singular 'air' is the canonical label; 'airs' is the family name."

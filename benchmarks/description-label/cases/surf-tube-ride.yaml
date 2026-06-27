@@ -1,0 +1,14 @@
+schema_version: "1"
+id: surf-tube-ride
+input: |
+  The surfer rides inside the hollow barrel formed as the wave lip throws over the open face, traveling within the curling tube of water.
+expected: "tube ride"
+tags:
+  - surfing
+  - barrel
+difficulty: expert
+provenance:
+  source: "original"
+  author: "AI-bench contributors"
+  license: "CC0-1.0"
+  notes: "Also called a barrel ride; the canonical two-word label is required."
