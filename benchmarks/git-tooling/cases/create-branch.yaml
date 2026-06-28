@@ -14,6 +14,7 @@ verifier: {verifier: state_check}
 state_check:
   git:
     branches: ["main", "feature"]
+    current_branch: "feature"
     status_clean: true
     head_commit_message: "seed repo"
 expected: "state-check"

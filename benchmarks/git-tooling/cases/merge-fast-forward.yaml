@@ -23,6 +23,7 @@ state_check:
     status_clean: true
     head_commit_message: "add notes"
     branches: ["main", "feature"]
+    current_branch: "main"
 expected: "state-check"
 provenance:
   source: original

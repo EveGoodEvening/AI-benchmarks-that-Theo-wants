@@ -16,6 +16,7 @@ verifier: {verifier: state_check}
 state_check:
   git:
     branches: ["main", "dev", "release"]
+    current_branch: "main"
     status_clean: true
     head_commit_message: "seed repo"
 expected: "state-check"

@@ -100,6 +100,45 @@ def test_review_fix_cases_have_observable_state_targets() -> None:
     assert cases["reset-soft"]["state_check"]["files"]["notes.md"]["contains"] == "reset"
 
 
+def test_branch_sensitive_cases_lock_current_branch() -> None:
+    """The five branch-sensitive cases assert an explicit final current_branch.
+
+    create-branch ends on ``feature``; the other four (branch-list, cherry-pick,
+    merge-fast-forward, merge-no-ff) switch back to / stay on ``main``. Each
+    case's ``state_check.git.current_branch`` is locked, and the matching
+    checked-in sample transcript's ``final_repo_state.current_branch`` agrees
+    with the case expectation, so the real-verifier transcript-replay path
+    scores them against the asserted branch rather than ignoring it.
+    """
+    cases = {case["id"]: case for _path, case in _load_cases()}
+    expected = {
+        "create-branch": "feature",
+        "branch-list": "main",
+        "cherry-pick": "main",
+        "merge-fast-forward": "main",
+        "merge-no-ff": "main",
+    }
+    for case_id, branch in expected.items():
+        case = cases[case_id]
+        git = case["state_check"]["git"]
+        assert "current_branch" in git, case_id
+        assert git["current_branch"] == branch, case_id
+        # The asserted branch must be present in the branches list.
+        assert branch in git["branches"], case_id
+
+    transcripts = _BENCHMARK_DIR / "sample_transcripts"
+    for case_id, branch in expected.items():
+        transcript_path = transcripts / f"{case_id}.json"
+        assert transcript_path.is_file(), case_id
+        record = json.loads(transcript_path.read_text())
+        assert record["case_id"] == case_id, case_id
+        state = record["final_repo_state"]
+        assert "current_branch" in state, case_id
+        assert state["current_branch"] == branch, case_id
+        # Transcript branch list must contain the asserted current branch.
+        assert branch in state["branches"], case_id
+
+
 def test_smoke_subset_is_non_empty_and_selectable() -> None:
     """The four smoke-tagged cases exist and --tag smoke selects only them."""
     cases = _load_cases()

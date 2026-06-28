@@ -148,6 +148,7 @@
       "dev",
       "release"
     ],
+    "current_branch": "main",
     "commits": [
       {
         "sha": "abcdef0",
