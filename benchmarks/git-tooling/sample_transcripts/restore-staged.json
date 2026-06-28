@@ -3,12 +3,7 @@
   "transcript": [
     {
       "command": "git",
-      "argv": [
-        "init",
-        "-q",
-        "-b",
-        "main"
-      ],
+      "argv": ["init", "-q", "-b", "main"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -21,11 +16,7 @@
     },
     {
       "command": "git",
-      "argv": [
-        "config",
-        "user.name",
-        "ai-bench"
-      ],
+      "argv": ["config", "user.name", "ai-bench"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -38,11 +29,7 @@
     },
     {
       "command": "git",
-      "argv": [
-        "config",
-        "user.email",
-        "ai-bench@local"
-      ],
+      "argv": ["config", "user.email", "ai-bench@local"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -55,10 +42,7 @@
     },
     {
       "command": "git",
-      "argv": [
-        "add",
-        "-A"
-      ],
+      "argv": ["add", "-A"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -71,12 +55,7 @@
     },
     {
       "command": "git",
-      "argv": [
-        "commit",
-        "-q",
-        "-m",
-        "seed repo"
-      ],
+      "argv": ["commit", "-q", "-m", "seed repo"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -89,10 +68,7 @@
     },
     {
       "command": "file.write",
-      "argv": [
-        "README.md",
-        "changed\n"
-      ],
+      "argv": ["README.md", "changed\n"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -105,10 +81,7 @@
     },
     {
       "command": "git",
-      "argv": [
-        "add",
-        "README.md"
-      ],
+      "argv": ["add", "README.md"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -121,27 +94,7 @@
     },
     {
       "command": "git",
-      "argv": [
-        "restore",
-        "--staged",
-        "README.md"
-      ],
-      "cwd": ".",
-      "env_overrides": {},
-      "stdin": null,
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": "",
-      "wall_clock_ms": 1,
-      "timeout": false,
-      "sandbox_boundary_violation": false
-    },
-    {
-      "command": "git",
-      "argv": [
-        "restore",
-        "README.md"
-      ],
+      "argv": ["restore", "--staged", "README.md"],
       "cwd": ".",
       "env_overrides": {},
       "stdin": null,
@@ -156,19 +109,21 @@
   "final_repo_state": {
     "file_tree": [
       "README.md",
-      "src/app.py",
-      "docs/intro.md"
+      "docs/intro.md",
+      "src/app.py"
     ],
-    "git_status": "",
+    "git_status": " M README.md\n",
     "branches": [
       "main"
     ],
+    "current_branch": "main",
+    "tags": [],
     "commits": [
       {
         "sha": "abcdef0",
         "subject": "seed repo"
       }
     ],
-    "diff": ""
+    "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,3 +1 @@\n-# seed\n-\n-A small seeded repository for git-tooling cases.\n+changed\n"
   }
 }

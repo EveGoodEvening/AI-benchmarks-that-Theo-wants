@@ -303,12 +303,20 @@ def repo_state_from_mapping(data: Mapping[str, Any]) -> T.RepoState:
         normalized_commits.append({"sha": sha, "subject": subject})
     if not isinstance(diff, str):
         raise RunRecordValidationError("repo state diff must be a string")
+    current_branch = data.get("current_branch")
+    if current_branch is not None and not isinstance(current_branch, str):
+        raise RunRecordValidationError("repo state current_branch must be a string or null")
+    tags = data["tags"] if "tags" in data else ()
+    if not isinstance(tags, (list, tuple)) or any(not isinstance(t, str) for t in tags):
+        raise RunRecordValidationError("repo state tags must be a string array")
     return T.RepoState(
         file_tree=tuple(file_tree),
         git_status=git_status,
         branches=tuple(branches),
         commits=tuple(normalized_commits),
         diff=diff,
+        current_branch=current_branch,
+        tags=tuple(tags),
     )
 
 
@@ -398,13 +406,18 @@ def _tool_action_to_dict(action: T.ToolAction) -> dict[str, Any]:
 
 
 def _repo_state_to_dict(state: T.RepoState) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "file_tree": list(state.file_tree),
         "git_status": state.git_status,
         "branches": list(state.branches),
         "commits": [dict(c) for c in state.commits],
         "diff": state.diff,
     }
+    if state.current_branch is not None:
+        out["current_branch"] = state.current_branch
+    if state.tags:
+        out["tags"] = list(state.tags)
+    return out
 
 
 def _case_result_to_dict(result: T.CaseResult) -> dict[str, Any]:

@@ -107,13 +107,15 @@
   "final_repo_state": {
     "file_tree": [
       "README.md",
-      "src/app.py",
-      "docs/intro.md"
+      "docs/intro.md",
+      "notes.md",
+      "src/app.py"
     ],
     "git_status": "?? notes.md\n",
     "branches": [
       "main"
     ],
+    "current_branch": "main",
     "commits": [
       {
         "sha": "abcdef0",

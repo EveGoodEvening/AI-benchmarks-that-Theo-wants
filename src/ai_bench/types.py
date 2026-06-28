@@ -350,8 +350,11 @@ class ToolAction:
 class RepoState:
     """Final repository state snapshot passed to the state-check verifier.
 
-    Frozen by the C02 run-record schema; C05/C07 consume it as-is. All fields
-    are required by the schema so an empty ``{}`` snapshot cannot validate.
+    The five original fields are required by the schema so an empty ``{}``
+    snapshot cannot validate. ``current_branch`` and ``tags`` are optional
+    (defaulting to ``None``/empty) so existing snapshots that predate them
+    remain valid. If a ``state_check`` explicitly asserts either field, the
+    verifier fails closed when the snapshot lacks the requested observable.
     """
 
     file_tree: Sequence[str]
@@ -359,6 +362,8 @@ class RepoState:
     branches: Sequence[str]
     commits: Sequence[Mapping[str, str]]
     diff: str
+    current_branch: str | None = None
+    tags: Sequence[str] = ()
 
 
 @dataclass(frozen=True)

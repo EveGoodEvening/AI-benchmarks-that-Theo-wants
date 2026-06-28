@@ -161,16 +161,17 @@
       "docs/intro.md",
       "notes.md"
     ],
-    "git_status": "M  notes.md\n",
+    "git_status": "A  notes.md\n",
     "branches": [
       "main"
     ],
+    "current_branch": "main",
     "commits": [
       {
         "sha": "abcdef0",
         "subject": "seed repo"
       }
     ],
-    "diff": ""
+    "diff": "diff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1 @@\n+reset me\n"
   }
 }

@@ -293,12 +293,24 @@ def _to_repo_state(value: Any) -> RepoState:
             raise VerifierConfigurationError(
                 f"state_check observed repo state missing fields: {missing}"
             )
+        current_branch = value.get("current_branch")
+        if current_branch is not None and not isinstance(current_branch, str):
+            raise VerifierConfigurationError(
+                "state_check observed repo state current_branch must be a string or null"
+            )
+        tags = value["tags"] if "tags" in value else ()
+        if not isinstance(tags, (list, tuple)) or any(not isinstance(t, str) for t in tags):
+            raise VerifierConfigurationError(
+                "state_check observed repo state tags must be a string array"
+            )
         return RepoState(
             file_tree=tuple(value["file_tree"]),
             git_status=str(value["git_status"]),
             branches=tuple(value["branches"]),
             commits=tuple(value["commits"]),
             diff=str(value["diff"]),
+            current_branch=current_branch,
+            tags=tuple(tags),
         )
     raise VerifierConfigurationError(
         "state_check observed must be a RepoState or a mapping; "
@@ -694,8 +706,8 @@ class RepoStateVerifier:
       substring, and/or match a pinned sha256 of its contents.
     * ``spec.git``: ``branches`` (expected branch names present), ``commits``
       (mapping of sha-prefix -> subject substring), ``status_clean`` (git
-      status must be empty), and ``head_commit_message`` (HEAD subject must
-      contain the substring).
+      status must be empty), ``head_commit_message`` (HEAD subject must contain
+      the substring), ``current_branch``, and ``tags``.
     * ``spec.absent``: each named path must NOT exist in the file tree.
 
     The verifier is deterministic and explains every mismatch in ``reason``
@@ -920,6 +932,28 @@ def _check_git(git: Mapping[str, Any], state: RepoState) -> list[str]:
             mismatches.append(
                 f"git head commit subject {state.commits[0].get('subject')!r} "
                 f"does not contain {head_msg!r}"
+            )
+    current_branch = git.get("current_branch")
+    if current_branch is not None:
+        actual = state.current_branch
+        if actual is None:
+            mismatches.append(
+                "git current_branch expected but snapshot has no current branch"
+            )
+        elif actual != current_branch:
+            mismatches.append(
+                f"git current_branch expected {current_branch!r} but is "
+                f"{actual!r}"
+            )
+    tags = git.get("tags")
+    if tags is not None:
+        expected_tags = set(tags)
+        actual_tags = set(state.tags)
+        missing_tags = expected_tags - actual_tags
+        if missing_tags:
+            mismatches.append(
+                f"git tags missing: {sorted(missing_tags)} "
+                f"(present: {sorted(actual_tags)})"
             )
     return mismatches
 

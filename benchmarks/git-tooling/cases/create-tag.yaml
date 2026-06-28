@@ -16,11 +16,12 @@ state_check:
     status_clean: true
     head_commit_message: "seed repo"
     branches: ["main"]
+    tags: ["v1.0"]
 expected: "state-check"
 provenance:
   source: original
   author: AI-bench contributors
   license: CC0-1.0
-  notes: "Annotated tag; tags not in repo_state snapshot, only clean state asserted."
+  notes: "Annotated tag observable via git.tags in the repo-state snapshot."
 tags: [git, tag]
 difficulty: easy

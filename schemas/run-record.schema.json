@@ -384,6 +384,15 @@
         "diff": {
           "type": "string",
           "description": "Unified diff of the working tree against HEAD (or the relevant base)."
+        },
+        "current_branch": {
+          "type": ["string", "null"],
+          "description": "The current branch (symbolic-ref HEAD short name), or null if HEAD is detached/no branch. Optional for backward compatibility."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tag names present in the repository. Optional for backward compatibility."
         }
       }
     }

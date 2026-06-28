@@ -132,6 +132,7 @@
       "main",
       "feature"
     ],
+    "current_branch": "main",
     "commits": [
       {
         "sha": "abcdef0",

@@ -12,7 +12,8 @@ input:
     - {command: file.write, argv: ["notes.md", "temp\n"], cwd: "."}
     - {command: git, argv: ["add", "notes.md"], cwd: "."}
     - {command: git, argv: ["commit", "-m", "add notes"], cwd: "."}
-    - {command: git, argv: ["revert", "HEAD", "-m", "revert add notes"], cwd: "."}
+    - {command: git, argv: ["revert", "-n", "HEAD"], cwd: "."}
+    - {command: git, argv: ["commit", "-m", "revert add notes"], cwd: "."}
 verifier: {verifier: state_check}
 state_check:
   absent: ["notes.md"]

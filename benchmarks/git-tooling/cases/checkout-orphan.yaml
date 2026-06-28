@@ -1,7 +1,7 @@
 schema_version: "1"
 id: checkout-orphan
 input:
-  prompt: "Create and switch to an orphan branch 'orphan' with no commit history."
+  prompt: "Create and switch to an orphan branch 'orphan' with no commit history, then create ORPHAN.md with 'orphan init' and commit it as 'orphan root'."
   fixture: "fixtures/seed"
   script:
     - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
@@ -10,15 +10,23 @@ input:
     - {command: git, argv: ["add", "-A"], cwd: "."}
     - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
     - {command: git, argv: ["switch", "--orphan", "orphan"], cwd: "."}
+    - {command: file.write, argv: ["ORPHAN.md", "orphan init\n"], cwd: "."}
+    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["commit", "-q", "-m", "orphan root"], cwd: "."}
 verifier: {verifier: state_check}
 state_check:
+  files:
+    ORPHAN.md: {exists: true}
   git:
     branches: ["main", "orphan"]
+    current_branch: "orphan"
+    head_commit_message: "orphan root"
+    status_clean: true
 expected: "state-check"
 provenance:
   source: original
   author: AI-bench contributors
   license: CC0-1.0
-  notes: "Orphan branch has staged seed files but no commits; only branches asserted."
+  notes: "Orphan branch has no shared history with main; committing on it makes the branch observable in refs/heads with a distinct root commit."
 tags: [git, checkout]
 difficulty: medium

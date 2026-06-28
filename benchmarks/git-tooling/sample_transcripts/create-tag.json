@@ -117,6 +117,8 @@
     "branches": [
       "main"
     ],
+    "current_branch": "main",
+    "tags": ["v1.0"],
     "commits": [
       {
         "sha": "abcdef0",

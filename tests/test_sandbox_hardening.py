@@ -907,21 +907,84 @@ def test_timeout_is_enforced_and_recorded(tmp_path: Path, monkeypatch: pytest.Mo
     assert row.exit_code == 137
 
 
-def test_cpu_resource_limit_applied(tmp_path: Path) -> None:
-    """The dispatcher applies an RLIMIT_CPU limit during dispatch."""
+def test_cpu_resource_limit_not_applied_in_parent(tmp_path: Path) -> None:
+    """The dispatcher never modifies the parent process RLIMIT_CPU.
+
+    Regression for the full-suite SIGXCPU/exit-152 leak: applying RLIMIT_CPU
+    in the parent (pytest) process is unsafe because RLIMIT_CPU is a
+    per-process *cumulative* CPU-time limit.  Once the parent has consumed
+    more than ``cpu_seconds`` of CPU across the whole test run, re-arming a
+    low soft limit in the parent delivers SIGXCPU immediately, killing the
+    process before the restore in ``finally`` can run.  The CPU limit must
+    be applied only in the git child via ``preexec_fn``; the parent's
+    RLIMIT_CPU must be untouched by every dispatch path.
+    """
     root = tmp_path / "sandbox"
     root.mkdir()
     cfg = SB.SandboxConfig(cpu_seconds=1)
     dispatcher = SB.InProcessSandboxDispatcher(cfg)
     handle = _handle(root)
     action = ToolActionRequest(command="file.write", argv=("a.txt", "x"), cwd=".")
-    # The CPU limit is applied and restored; we assert it does not break
-    # normal operations and is restored afterward.
     before = resource.getrlimit(resource.RLIMIT_CPU)
     row = dispatcher.dispatch(action, sandbox=handle)
     after = resource.getrlimit(resource.RLIMIT_CPU)
     assert row.exit_code == 0
-    assert before == after, "RLIMIT_CPU must be restored after dispatch"
+    assert before == after, (
+        "RLIMIT_CPU must never be modified in the parent process by dispatch"
+    )
+
+
+def test_cpu_resource_limit_applied_in_git_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The git child receives the per-action RLIMIT_CPU via ``preexec_fn``.
+
+    The CPU limit is enforced in the child process only (after fork, before
+    exec) so it can never poison the host process.  This fakes
+    ``subprocess.run`` to capture the ``preexec_fn`` and assert it lowers the
+    soft RLIMIT_CPU to ``cpu_seconds`` without touching the hard limit -- the
+    same wiring the production path uses for every git action.
+    """
+    import subprocess as _subprocess
+
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    _init_repo_with_commit(root)
+
+    cfg = SB.SandboxConfig(cpu_seconds=3)
+    dispatcher = SB.InProcessSandboxDispatcher(cfg)
+    handle = _handle(root)
+    action = ToolActionRequest(command="git", argv=("log", "--all"), cwd=".")
+
+    captured: dict[str, Any] = {}
+
+    def _fake_run(*args: Any, **kwargs: Any) -> Any:
+        preexec = kwargs.get("preexec_fn")
+        captured["preexec_fn"] = preexec
+        assert preexec is not None, "git subprocess must set preexec_fn for CPU limit"
+        # Executing preexec here runs in the parent (test) process; that is
+        # fine for asserting its *effect* on RLIMIT_CPU, but we must restore
+        # afterward so the test process is not poisoned.
+        before = resource.getrlimit(resource.RLIMIT_CPU)
+        try:
+            preexec()
+            soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+            captured["soft"] = soft
+            captured["hard"] = hard
+        finally:
+            resource.setrlimit(resource.RLIMIT_CPU, before)
+        return _subprocess.CompletedProcess(args=args[0] if args else "git",
+                                            returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(SB.subprocess, "run", _fake_run)
+    row = dispatcher.dispatch(action, sandbox=handle)
+    assert row.exit_code == 0
+    assert captured.get("preexec_fn") is not None
+    assert captured.get("soft") == 3, (
+        f"child soft RLIMIT_CPU must equal cpu_seconds=3, got {captured.get('soft')!r}"
+    )
+    # Hard limit is preserved (not lowered).
+    assert captured.get("hard") == resource.RLIM_INFINITY or captured.get("hard") >= 3
 
 
 def test_file_write_size_limit_enforced(tmp_path: Path) -> None:

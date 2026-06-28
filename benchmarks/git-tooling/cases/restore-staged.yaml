@@ -1,7 +1,7 @@
 schema_version: "1"
 id: restore-staged
 input:
-  prompt: "Overwrite README.md with 'changed\n', stage it, then restore the staged change back to HEAD."
+  prompt: "Overwrite README.md with 'changed\n', stage it, then restore the staged change back to HEAD so the change is unstaged in the working tree. Do not commit."
   fixture: "fixtures/seed"
   script:
     - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
@@ -12,20 +12,18 @@ input:
     - {command: file.write, argv: ["README.md", "changed\n"], cwd: "."}
     - {command: git, argv: ["add", "README.md"], cwd: "."}
     - {command: git, argv: ["restore", "--staged", "README.md"], cwd: "."}
-    - {command: git, argv: ["restore", "README.md"], cwd: "."}
 verifier: {verifier: state_check}
 state_check:
+  files:
+    README.md: {exists: true, contains: "changed"}
   git:
-    status_clean: true
     head_commit_message: "seed repo"
     branches: ["main"]
-  files:
-    README.md: {exists: true}
 expected: "state-check"
 provenance:
   source: original
   author: AI-bench contributors
   license: CC0-1.0
-  notes: "Stage then unstage+restore working tree to HEAD."
+  notes: "Stage then unstage; working tree left dirty with the unstaged change observable via the diff."
 tags: [git, restore]
 difficulty: medium

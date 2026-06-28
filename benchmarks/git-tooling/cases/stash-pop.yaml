@@ -15,7 +15,7 @@ input:
 verifier: {verifier: state_check}
 state_check:
   files:
-    README.md: {exists: true}
+    README.md: {exists: true, contains: "wip"}
   git:
     head_commit_message: "seed repo"
     branches: ["main"]

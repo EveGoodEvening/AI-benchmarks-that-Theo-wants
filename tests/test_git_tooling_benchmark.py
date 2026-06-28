@@ -15,7 +15,6 @@ from pathlib import Path
 
 import jsonschema
 import pytest
-import yaml
 from ai_bench import cli
 from ai_bench import loader as L
 from ai_bench import runner as R
@@ -71,6 +70,36 @@ def test_cases_use_state_check_verifier() -> None:
         assert "sha256" not in state_check, case["id"]
 
 
+def test_review_fix_cases_have_observable_state_targets() -> None:
+    """C08 review fixes stay locked to state-check-observable outcomes."""
+    cases = {case["id"]: case for _path, case in _load_cases()}
+
+    revert_steps = [
+        step.get("argv")
+        for step in cases["revert-commit"]["input"]["script"]
+        if step.get("command") == "git"
+    ]
+    assert ["commit", "-m", "add notes"] in revert_steps
+    assert ["revert", "-n", "HEAD"] in revert_steps
+    assert ["revert", "HEAD", "-m", "revert add notes"] not in revert_steps
+
+    assert cases["checkout-orphan"]["state_check"]["git"]["current_branch"] == "orphan"
+    assert cases["create-tag"]["state_check"]["git"]["tags"] == ["v1.0"]
+    assert cases["switch-back"]["state_check"]["git"]["current_branch"] == "main"
+
+    clean = cases["clean-untracked"]
+    assert clean["input"]["fixture"] == "fixtures/clean-untracked"
+    assert (_BENCHMARK_DIR / clean["input"]["fixture"] / "build.tmp").is_file()
+    assert clean["state_check"]["absent"] == ["build.tmp"]
+
+    assert (
+        cases["restore-staged"]["state_check"]["files"]["README.md"]["contains"]
+        == "changed"
+    )
+    assert cases["stash-pop"]["state_check"]["files"]["README.md"]["contains"] == "wip"
+    assert cases["reset-soft"]["state_check"]["files"]["notes.md"]["contains"] == "reset"
+
+
 def test_smoke_subset_is_non_empty_and_selectable() -> None:
     """The four smoke-tagged cases exist and --tag smoke selects only them."""
     cases = _load_cases()
@@ -116,9 +145,9 @@ def test_non_stub_replay_scores_real_transcripts(tmp_path: Path) -> None:
     """The checked-in sample_transcripts are scored by the real state_check verifier.
 
     The run-record records the replay source as the model id, is schema-valid,
-    and covers all 24 cases. At least one case passes and the deliberate miss
-    (dirty-no-commit) is recorded as a failed verdict, proving the real-verifier
-    transcript-replay acceptance path.
+    covers all 24 cases, and records the intended 23 pass / 1 fail accounting:
+    only the deliberate ``dirty-no-commit`` miss fails, proving the
+    real-verifier transcript-replay acceptance path.
     """
     transcripts = _BENCHMARK_DIR / "sample_transcripts"
     assert transcripts.is_dir(), "sample_transcripts directory must be checked in"
@@ -134,11 +163,48 @@ def test_non_stub_replay_scores_real_transcripts(tmp_path: Path) -> None:
 
     assert result.record["model"]["adapter"] == "replay"
     assert result.record["model"]["id"].startswith("replay:")
-    assert result.record["aggregate"]["n_cases"] == 24
-    assert result.record["aggregate"]["n_pass"] >= 1
+    aggregate = result.record["aggregate"]
+    assert aggregate["n_cases"] == 24
+    assert aggregate["n_pass"] == 23
+    assert aggregate["n_fail"] == 1
     verdicts = {c["case_id"]: c["verdict"] for c in result.record["cases"]}
     assert verdicts["dirty-no-commit"] == "fail"
 
+
+def test_smoke_replay_verdicts_match_readme(tmp_path: Path) -> None:
+    """The smoke subset replayed through the real verifier matches the README claim.
+
+    The README states only ``dirty-no-commit`` is an intentional smoke failure.
+    Under the real transcript-replay path (not the stub fake snapshot), the
+    three other smoke cases pass and ``dirty-no-commit`` fails because its
+    working tree is left dirty (``status_clean: true`` is violated), not
+    because a file is missing.
+    """
+    transcripts = _BENCHMARK_DIR / "sample_transcripts"
+    output = tmp_path / "smoke-replay-record.json"
+    result = R.run_benchmark(
+        _BENCHMARK_DIR,
+        tag="smoke",
+        replay=transcripts,
+        output=output,
+    )
+    aggregate = result.record["aggregate"]
+    assert aggregate["n_cases"] == len(_SMOKE_IDS)
+    assert aggregate["n_pass"] == 3
+    assert aggregate["n_fail"] == 1
+    assert aggregate["value"] == pytest.approx(0.75)
+    verdicts = {c["case_id"]: c["verdict"] for c in result.record["cases"]}
+    # Only dirty-no-commit is the intentional smoke failure.
+    assert verdicts["init-repo"] == "pass"
+    assert verdicts["create-branch"] == "pass"
+    assert verdicts["stage-and-commit"] == "pass"
+    assert verdicts["dirty-no-commit"] == "fail"
+    # dirty-no-commit fails due to dirty status, not a missing file: notes.md
+    # is present in the file_tree but the working tree is not clean.
+    dirty = next(c for c in result.record["cases"] if c["case_id"] == "dirty-no-commit")
+    state = dirty.get("final_repo_state") or {}
+    assert "notes.md" in state.get("file_tree", [])
+    assert state.get("git_status", "").strip() != ""
 
 def test_cli_validate_one_exits_zero() -> None:
     """``ai-bench validate benchmarks/git-tooling`` exits 0."""

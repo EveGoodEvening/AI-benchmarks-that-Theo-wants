@@ -57,7 +57,9 @@
       "command": "git",
       "argv": [
         "add",
-        "-A"
+        "README.md",
+        "docs/intro.md",
+        "src/app.py"
       ],
       "cwd": ".",
       "env_overrides": {},
@@ -88,26 +90,11 @@
       "sandbox_boundary_violation": false
     },
     {
-      "command": "file.write",
-      "argv": [
-        "build.tmp",
-        "junk\n"
-      ],
-      "cwd": ".",
-      "env_overrides": {},
-      "stdin": null,
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": "",
-      "wall_clock_ms": 1,
-      "timeout": false,
-      "sandbox_boundary_violation": false
-    },
-    {
       "command": "git",
       "argv": [
         "clean",
-        "-fd"
+        "-f",
+        "-d"
       ],
       "cwd": ".",
       "env_overrides": {},
@@ -123,13 +110,14 @@
   "final_repo_state": {
     "file_tree": [
       "README.md",
-      "src/app.py",
-      "docs/intro.md"
+      "docs/intro.md",
+      "src/app.py"
     ],
     "git_status": "",
     "branches": [
       "main"
     ],
+    "current_branch": "main",
     "commits": [
       {
         "sha": "abcdef0",

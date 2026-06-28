@@ -20,7 +20,7 @@ checked-in, hermetically scoreable suite of original fixtures.
   **not** called GitBench and does not import or reproduce any of Theo's
   actual GitBench cases.
 - **Original fixtures.** Every case, seeded working tree, and expected
-  repository state in `cases/*.yaml` and `fixtures/seed/**` was written from
+  repository state in `cases/*.yaml` and `fixtures/**` was written from
   scratch for this suite. They are original fixtures, not copied from any
   existing benchmark dataset.
 
@@ -38,12 +38,13 @@ whether the agent can recite git flags.
 
 The benchmark uses the built-in `state_check` verifier (C04/C07) declared in
 `src/ai_bench/scoring.py`. Each case carries a per-case `verifier:
-{verifier: state_check}` override and a `state_check` block asserting
+`{verifier: state_check}` override and a `state_check` block asserting
 deterministic repository invariants: `git.status_clean`,
 `git.head_commit_message` (matched by substring), `git.branches`,
-`files.<path>.exists`, and `absent`. The verifier fails closed on
+`git.current_branch`, `git.tags`, `files.<path>.exists`,
+`files.<path>.contains`, and `absent`. The verifier fails closed on
 nondeterministic assertions like `sha256`, so cases rely on subject substrings
-and branch lists instead of commit hashes. No LLM judge is used.
+and branch/tag lists instead of commit hashes. No LLM judge is used.
 
 ## Hermetic sandbox assumptions
 
@@ -73,10 +74,15 @@ Cases tagged `smoke` form the smoke subset selectable with
 - `dirty-no-commit` (easy, **intentional FAIL**)
 
 `dirty-no-commit` is the deliberate failure path: its script writes `notes.md`
-but never stages or commits it, so its `state_check` (which expects
-`status_clean: true` and `notes.md` to exist as a committed result) fails.
-This proves failed case verdicts are scored evaluation data, not command
-failures — the run still exits 0 and writes a schema-valid run-record.
+but never stages or commits it, so the replay snapshot includes the file while
+`git_status` remains dirty. Its `state_check` expects both `notes.md` to exist
+and `status_clean: true`; the file assertion passes and the clean-status
+assertion fails. This proves failed case verdicts are scored evaluation data,
+not command failures — the run still exits 0 and writes a schema-valid
+run-record. Under the real transcript-replay path, smoke accounting is 3 pass /
+1 fail: the three other smoke cases pass and only `dirty-no-commit` fails. Under
+the stub path the stub's fake snapshot causes additional smoke failures, which
+are plumbing artifacts, not benchmark verdicts.
 
 ## Reproducibility and the non-stub path
 
@@ -97,8 +103,8 @@ failed verdict appears in the run-record while the command still exits 0.
 
 ## Limitations
 
-- **Small and git-only.** v1 ships 24 cases over a single small seeded
-  repository. This is enough to demonstrate the `state_check` verifier path
+- **Small and git-only.** v1 ships 24 cases over small seeded working trees.
+  This is enough to demonstrate the `state_check` verifier path
   and the hermetic tool-task contribution shape, not to support statistically
   strong model rankings.
 - **Deterministic state.** Expected states are deterministic repository
@@ -118,10 +124,11 @@ uv run ai-bench validate benchmarks/git-tooling
 uv run ai-bench run benchmarks/git-tooling --model stub
 uv run ai-bench run benchmarks/git-tooling --tag smoke --model stub
 uv run ai-bench run benchmarks/git-tooling --replay benchmarks/git-tooling/sample_transcripts
+uv run ai-bench run benchmarks/git-tooling --tag smoke --replay benchmarks/git-tooling/sample_transcripts
 uv run pytest tests/test_git_tooling_benchmark.py -q
 ```
 
-All five exit 0 on a healthy benchmark. Per the C05 exit contract, exit 0 means
+All six exit 0 on a healthy benchmark. Per the C05 exit contract, exit 0 means
 the selected cases were evaluated, scored through the `state_check` verifier,
 and a schema-valid run-record was written — it does **not** mean every case
 verdict passed (the `dirty-no-commit` smoke case and any failed replay verdicts

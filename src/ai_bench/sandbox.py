@@ -1492,6 +1492,8 @@ def repo_state_snapshot(root: Path) -> T.RepoState:
     branches: tuple[str, ...] = ()
     commits: tuple[Mapping[str, str], ...] = ()
     diff = ""
+    current_branch: str | None = None
+    tags: tuple[str, ...] = ()
     if (root / ".git").exists():
         metadata_violation = _git_metadata_files_violation(root)
         if metadata_violation is not None:
@@ -1508,6 +1510,10 @@ def repo_state_snapshot(root: Path) -> T.RepoState:
             else:
                 head_branch = _git_symbolic_head_branch(root, env)
                 branches = (head_branch,) if head_branch else ()
+            current_branch = _git_symbolic_head_branch(root, env)
+            tags = tuple(
+                _git_lines(root, env, "tag", "--list")
+            )
             commits = _git_commits(root, env)
             diff = _git_text(root, env, "diff", "HEAD", "--no-color") or _git_text(
                 root, env, "diff", "--cached", "--no-color"
@@ -1518,6 +1524,8 @@ def repo_state_snapshot(root: Path) -> T.RepoState:
         branches=branches,
         commits=commits,
         diff=diff,
+        current_branch=current_branch,
+        tags=tags,
     )
 
 
@@ -1781,16 +1789,28 @@ class InProcessSandboxDispatcher:
         env_overrides: Mapping[str, str],
         timeout_ms: int,
     ) -> tuple[int, str, str]:
-        # C07.3: apply CPU resource limit for the duration of the action.
-        prev_cpu = resource.getrlimit(resource.RLIMIT_CPU)
-        try:
-            resource.setrlimit(
-                resource.RLIMIT_CPU,
-                (self.config.cpu_seconds, prev_cpu[1]),
-            )
-            return handler(action, sandbox, argv, cwd, env_overrides, timeout_ms)
-        finally:
-            resource.setrlimit(resource.RLIMIT_CPU, prev_cpu)
+        # C07.3 CPU resource limit is applied ONLY in the child process via
+        # ``preexec_fn`` (see ``_handle_git``).  Setting RLIMIT_CPU here in
+        # the parent would poison the host process: RLIMIT_CPU is a
+        # per-process *cumulative* CPU-time limit, so once the parent (e.g.
+        # the pytest process running the full suite) has already consumed
+        # more than ``cpu_seconds`` of CPU, re-arming a low soft limit here
+        # would deliver SIGXCPU to the parent immediately, killing the whole
+        # test run with exit 152.  File ops are in-process and bounded by
+        # the per-command timeout; only git spawns a CPU-burning child, and
+        # that child gets its own RLIMIT_CPU via preexec.
+        return handler(action, sandbox, argv, cwd, env_overrides, timeout_ms)
+
+    def _cpu_preexec(self) -> None:
+        """Apply the per-action CPU limit in the child process only.
+
+        Called as ``preexec_fn`` of the git subprocess: it runs in the child
+        after fork but before exec, so the limit constrains only the git
+        child and never the host (pytest) process.  The hard limit is left
+        untouched; only the soft limit is lowered to ``cpu_seconds``.
+        """
+        soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+        resource.setrlimit(resource.RLIMIT_CPU, (self.config.cpu_seconds, hard))
 
     # --- git ----------------------------------------------------------------
 
@@ -1854,6 +1874,7 @@ class InProcessSandboxDispatcher:
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
+                preexec_fn=self._cpu_preexec,
             )
         except subprocess.TimeoutExpired:
             raise
@@ -2217,6 +2238,7 @@ class BwrapSandboxDispatcher:
                     capture_output=True,
                     text=True,
                     timeout=timeout_s,
+                    preexec_fn=self._inner._cpu_preexec,
                 )
             except BoundaryViolation as exc:
                 return self._inner._violation_row(

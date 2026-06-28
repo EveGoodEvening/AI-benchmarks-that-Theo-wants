@@ -419,6 +419,70 @@ class TestStateCheck:
         assert "target.txt" in result.reason
         assert "cannot be verified" in result.reason
 
+    def test_current_branch_match_passes(self) -> None:
+        spec = T.StateCheckSpec(git={"current_branch": "feature"})
+        state = _repo_state(branches=("main", "feature"), current_branch="feature")
+        result = RepoStateVerifier().check(spec, state, {})
+        assert result.verdict == "pass"
+
+    def test_current_branch_mismatch_fails(self) -> None:
+        spec = T.StateCheckSpec(git={"current_branch": "main"})
+        state = _repo_state(branches=("main", "feature"), current_branch="feature")
+        result = RepoStateVerifier().check(spec, state, {})
+        assert result.verdict == "fail"
+        assert "current_branch" in result.reason
+
+    def test_current_branch_missing_in_snapshot_fails(self) -> None:
+        spec = T.StateCheckSpec(git={"current_branch": "main"})
+        state = _repo_state(current_branch=None)
+        result = RepoStateVerifier().check(spec, state, {})
+        assert result.verdict == "fail"
+        assert "current_branch" in result.reason
+
+    def test_tags_match_passes(self) -> None:
+        spec = T.StateCheckSpec(git={"tags": ["v1.0"]})
+        state = _repo_state(tags=("v1.0",))
+        result = RepoStateVerifier().check(spec, state, {})
+        assert result.verdict == "pass"
+
+    def test_tags_missing_fails(self) -> None:
+        spec = T.StateCheckSpec(git={"tags": ["v1.0", "v2.0"]})
+        state = _repo_state(tags=("v1.0",))
+        result = RepoStateVerifier().check(spec, state, {})
+        assert result.verdict == "fail"
+        assert "tags missing" in result.reason
+
+    def test_repo_state_mapping_coerces_optional_fields(self) -> None:
+        state_map = {
+            "file_tree": ["a.txt"],
+            "git_status": "",
+            "branches": ["main"],
+            "commits": [{"sha": "abcdef0", "subject": "init"}],
+            "diff": "",
+            "current_branch": "main",
+            "tags": ["v1.0"],
+        }
+        register_state_check_verifier(RepoStateVerifier())
+        try:
+            spec = T.StateCheckSpec(git={"current_branch": "main", "tags": ["v1.0"]})
+            result = state_check(spec, state_map, {})  # type: ignore[arg-type]
+            assert result.verdict == "pass"
+        finally:
+            register_state_check_verifier(None)  # type: ignore[arg-type]
+
+    def test_repo_state_mapping_rejects_invalid_optional_fields(self) -> None:
+        base = {
+            "file_tree": ["a.txt"],
+            "git_status": "",
+            "branches": ["main"],
+            "commits": [{"sha": "abcdef0", "subject": "init"}],
+            "diff": "",
+        }
+        with pytest.raises(VerifierConfigurationError, match="current_branch"):
+            state_check(T.StateCheckSpec(), {**base, "current_branch": 7}, {})  # type: ignore[arg-type]
+        with pytest.raises(VerifierConfigurationError, match="tags"):
+            state_check(T.StateCheckSpec(), {**base, "tags": ["v1.0", 7]}, {})  # type: ignore[arg-type]
+
 
 # --- llm_judge --------------------------------------------------------------
 

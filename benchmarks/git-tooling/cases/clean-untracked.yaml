@@ -1,16 +1,15 @@
 schema_version: "1"
 id: clean-untracked
 input:
-  prompt: "Create an untracked file build.tmp, then remove untracked files with git clean."
-  fixture: "fixtures/seed"
+  prompt: "Initialize and commit the seed files while leaving build.tmp untracked, then remove untracked files with git clean."
+  fixture: "fixtures/clean-untracked"
   script:
     - {command: git, argv: ["init", "-q", "-b", "main"], cwd: "."}
     - {command: git, argv: ["config", "user.name", "ai-bench"], cwd: "."}
     - {command: git, argv: ["config", "user.email", "ai-bench@local"], cwd: "."}
-    - {command: git, argv: ["add", "-A"], cwd: "."}
+    - {command: git, argv: ["add", "README.md", "docs/intro.md", "src/app.py"], cwd: "."}
     - {command: git, argv: ["commit", "-q", "-m", "seed repo"], cwd: "."}
-    - {command: file.write, argv: ["build.tmp", "junk\n"], cwd: "."}
-    - {command: git, argv: ["clean", "-fd"], cwd: "."}
+    - {command: git, argv: ["clean", "-f", "-d"], cwd: "."}
 verifier: {verifier: state_check}
 state_check:
   absent: ["build.tmp"]
@@ -23,6 +22,6 @@ provenance:
   source: original
   author: AI-bench contributors
   license: CC0-1.0
-  notes: "git clean -fd removes untracked file."
+  notes: "The fixture contains build.tmp as an untracked file; git clean -f -d removes it, making the absent assertion distinguish clean from no-op. Flags are split to satisfy the sandbox git option allowlist."
 tags: [git, clean]
 difficulty: easy

@@ -145,12 +145,13 @@
     "branches": [
       "main"
     ],
+    "current_branch": "main",
     "commits": [
       {
         "sha": "abcdef0",
         "subject": "seed repo"
       }
     ],
-    "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,2 +1 @@\n-# seed\n+wip\n"
+    "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,3 +1 @@\n-# seed\n-\n-A small seeded repository for git-tooling cases.\n+wip\n"
   }
 }
