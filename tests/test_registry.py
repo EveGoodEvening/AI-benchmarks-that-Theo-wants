@@ -4,8 +4,9 @@ These tests exercise the auto-discovered benchmark registry delivered by C10:
 
   * ``build_registry(root)`` discovers real benchmarks under
     ``<root>/benchmarks`` and excludes ``benchmarks/_template/**``.
-  * The registry lists both reference benchmarks (``description-label`` and
-    ``git-tooling``) with metadata sourced from their manifests.
+  * The registry lists the reference benchmarks (``description-label`` and
+    ``git-tooling``) with metadata sourced from their manifests; additional
+    valid community benchmarks are permitted without test edits.
   * Registry fields (``id``, ``domain``, ``tags``, ``contributor``,
     ``license``, ``status``, ``version``) are read from the manifest, never
     inferred.
@@ -34,13 +35,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestBuildRegistry:
-    def test_lists_both_reference_benchmarks(self) -> None:
+    def test_lists_reference_benchmarks(self) -> None:
         entries = REG.build_registry(REPO_ROOT)
         ids = [e.id for e in entries]
         assert ids == sorted(ids), "registry must be sorted by id"
+        # Reference benchmarks must be present; additional valid benchmarks
+        # are allowed so future community contributions don't break this test.
         assert "description-label" in ids
         assert "git-tooling" in ids
-        assert len(entries) == 2
+        assert "_template" not in ids
 
     def test_excludes_template(self) -> None:
         entries = REG.build_registry(REPO_ROOT)
@@ -74,14 +77,17 @@ class TestBuildRegistry:
         text = json.dumps(index, sort_keys=True)
         parsed = json.loads(text)
         assert isinstance(parsed, list)
-        assert len(parsed) == 2
-        assert {row["id"] for row in parsed} == {"description-label", "git-tooling"}
+        assert {"description-label", "git-tooling"}.issubset(
+            {row["id"] for row in parsed}
+        )
 
     def test_registry_index_returns_dicts(self) -> None:
         index = REG.registry_index(REPO_ROOT)
         assert isinstance(index, list)
         assert all(isinstance(row, dict) for row in index)
-        assert {row["id"] for row in index} == {"description-label", "git-tooling"}
+        assert {"description-label", "git-tooling"}.issubset(
+            {row["id"] for row in index}
+        )
 
     def test_dir_field_points_at_benchmark_directory(self) -> None:
         entries = {e.id: e for e in REG.build_registry(REPO_ROOT)}
@@ -122,7 +128,7 @@ class TestDuplicateIds:
 
 
 class TestRegistryCli:
-    def test_registry_table_lists_both_benchmarks(
+    def test_registry_table_lists_reference_benchmarks(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
@@ -140,7 +146,7 @@ class TestRegistryCli:
         assert "domain" in out
         assert "status" in out
 
-    def test_registry_json_lists_both_benchmarks(
+    def test_registry_json_lists_reference_benchmarks(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
@@ -152,7 +158,9 @@ class TestRegistryCli:
         parsed = json.loads(out)
         assert isinstance(parsed, list)
         ids = {row["id"] for row in parsed}
-        assert ids == {"description-label", "git-tooling"}
+        # Reference benchmarks must be present; additional benchmarks allowed.
+        assert {"description-label", "git-tooling"}.issubset(ids)
+        assert "_template" not in ids
         # JSON entries carry the sourced metadata fields.
         desc = next(row for row in parsed if row["id"] == "description-label")
         assert desc["domain"] == "recreation"

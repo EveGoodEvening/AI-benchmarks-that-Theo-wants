@@ -281,6 +281,7 @@ A future session may run chunks in parallel only when they do not touch the same
   - [x] Run and record verification command and scenario.
 
 - Verification evidence (C10): Orchestrator verification passed. `uv run pytest tests/test_registry.py tests/test_template.py -q` -> 25 passed. `uv run ai-bench validate benchmarks/_template` -> OK `my-benchmark` cases=1 smoke=1. `uv run ai-bench validate` -> OK `description-label` + `git-tooling`, all 2 real benchmarks valid; template excluded. `uv run ai-bench registry` -> table lists `description-label` + `git-tooling`, excludes template. `uv run ai-bench registry --json` -> JSON array with `description-label` + `git-tooling` metadata. `uv run pytest -q` -> passed, one skipped. C10 checked; C11+ remain unchecked.
+- Review-fix evidence (C10): Orchestrator verification passed after the C10 registry-test future-proof fix. `uv run pytest tests/test_registry.py -q` -> 13 passed. `uv run pytest tests/test_registry.py tests/test_template.py -q` -> 25 passed. `uv run pytest -q` -> passed, one skipped. Registry tests in `tests/test_registry.py` now assert the reference benchmarks as a required subset (`description-label` and `git-tooling`) while continuing to assert `benchmarks/_template/**`/`_template` exclusion, so future valid community benchmarks will not be blocked by exact-count or exact-id assumptions. Reference benchmark metadata remains asserted; test method names were updated from `*_both_*` to `*_reference_*` to reflect the non-exact semantics.
 
 ### [ ] C11 — Conformance, smoke, and CI hardening
 
