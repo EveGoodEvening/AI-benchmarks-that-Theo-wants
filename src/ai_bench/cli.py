@@ -4,8 +4,10 @@ The ``ai-bench validate`` subcommand (both the ``<benchmark>`` and no-argument
 validate-all forms) is implemented in C03.  The ``ai-bench run`` subcommand is
 implemented in C05: it loads a benchmark, selects cases, evaluates via the
 stub/text-file/replay adapter paths, scores with the C04 verifiers, and writes
-a schema-valid run-record.  The ``failures`` subcommand remains a placeholder
-owned by C09.
+a schema-valid run-record.  The ``failures save``, ``retry``, and
+``hard-set export`` subcommands are implemented in C09: they preserve failed
+cases into a versioned failure store, replay stored failures, and export
+curated failures as a runnable benchmark subset.
 
 C03 validate behavior:
   * ``ai-bench validate <benchmark>`` loads a benchmark directory, validates
@@ -28,6 +30,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ai_bench import __version__
+from ai_bench import failures as F
 from ai_bench import loader as L
 from ai_bench import runner as R
 
@@ -116,15 +119,133 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory of per-case tool-action transcripts for tool-task replay.",
     )
 
-    # failures: placeholder owned by C09.
+    # failures: implemented in C09 (failure preservation + retry + hard-set).
     failures = subparsers.add_parser(
         "failures",
-        help="Preserve and retry failure cases (planned, not implemented yet).",
+        help="Preserve and inspect benchmark failure cases.",
+        description=(
+            "Preserve failed benchmark cases into a versioned failure store "
+            "conforming to schemas/failure-store.schema.json. Subcommand "
+            "'save' extracts failed cases from a C05 run-record."
+        ),
     )
-    failures.add_argument(
-        "--not-implemented",
-        action="store_true",
-        help=argparse.SUPPRESS,
+    failures_sub = failures.add_subparsers(
+        dest="failures_action",
+        metavar="<action>",
+        help="Failure-store action (see `ai-bench failures <action> --help`).",
+    )
+    failures_save = failures_sub.add_parser(
+        "save",
+        help="Preserve failed cases from a run-record into a failure store.",
+        description=(
+            "Extract cases with failed verifier verdicts from a schema-valid "
+            "C05 run-record and create or update a versioned failure store. "
+            "Provide --benchmark to load per-case task input from disk for "
+            "full reproducibility."
+        ),
+    )
+    failures_save.add_argument(
+        "run_record",
+        help="Path to a schema-valid run-record JSON produced by `ai-bench run`.",
+    )
+    failures_save.add_argument(
+        "--store",
+        required=True,
+        help="Path to the failure-store JSON to create or update.",
+    )
+    failures_save.add_argument(
+        "--benchmark",
+        default=None,
+        help=(
+            "Path to the benchmark directory used to load per-case task input. "
+            "Recommended for full reproducibility."
+        ),
+    )
+
+    # retry: implemented in C09 (replay stored failures).
+    retry = subparsers.add_parser(
+        "retry",
+        help="Replay stored failures and report improved/regressed/unchanged.",
+        description=(
+            "Re-run a benchmark whose failures were preserved in a failure "
+            "store and classify each stored failure as improved, regressed, or "
+            "unchanged based on verifier verdicts."
+        ),
+    )
+    retry.add_argument("store", help="Path to the failure-store JSON to retry.")
+    retry.add_argument(
+        "--benchmark",
+        required=True,
+        help="Path to the benchmark directory to re-run.",
+    )
+    retry.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Run-record JSON output path for the retry run.",
+    )
+    retry.add_argument(
+        "--model",
+        default="stub",
+        help="Model/adapter id for the retry run (default: stub).",
+    )
+    retry.add_argument("--seed", default=0, help="Seed pinned into the retry run-record.")
+    retry_offline = retry.add_mutually_exclusive_group()
+    retry_offline.add_argument(
+        "--predictions",
+        default=None,
+        help="Directory of per-case text prediction files for the retry run.",
+    )
+    retry_offline.add_argument(
+        "--predictions-file",
+        default=None,
+        help="JSON/JSONL mapping case ids to text predictions for the retry run.",
+    )
+    retry_offline.add_argument(
+        "--replay",
+        default=None,
+        help="Directory of per-case tool-action transcripts for the retry run.",
+    )
+
+    # hard-set: implemented in C09 (export curated failures as a benchmark subset).
+    hard_set = subparsers.add_parser(
+        "hard-set",
+        help="Turn curated failures into a runnable benchmark subset.",
+        description=(
+            "Export a curated failure store as a runnable benchmark subset. "
+            "The exported benchmark preserves provenance back to the original "
+            "failure cases."
+        ),
+    )
+    hard_set_sub = hard_set.add_subparsers(
+        dest="hard_set_action",
+        metavar="<action>",
+        help="Hard-set action (see `ai-bench hard-set <action> --help`).",
+    )
+    hard_set_export = hard_set_sub.add_parser(
+        "export",
+        help="Export a failure store as a runnable benchmark directory.",
+        description=(
+            "Write a runnable benchmark directory (manifest + cases) derived "
+            "from a preserved failure store. Provide --benchmark to inherit "
+            "the source benchmark's metric, prompt template, and sampling "
+            "config so the subset is directly runnable via `ai-bench run`."
+        ),
+    )
+    hard_set_export.add_argument("store", help="Path to the failure-store JSON to export.")
+    hard_set_export.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="Output directory for the exported benchmark subset.",
+    )
+    hard_set_export.add_argument(
+        "--benchmark",
+        default=None,
+        help=(
+            "Path to the source benchmark directory to inherit metric/prompt/"
+            "sampling config from. Recommended for a directly runnable subset."
+        ),
     )
     return parser
 
@@ -281,6 +402,73 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
     return 0
 
+def _cmd_failures_save(args: argparse.Namespace) -> int:
+    """Implement ``ai-bench failures save <run-record> --store <failure-store>``."""
+    try:
+        store = F.save_failures(
+            args.run_record,
+            args.store,
+            benchmark_dir=args.benchmark,
+        )
+    except F.FailureStoreError as exc:
+        print(f"ai-bench: failures save failed: {exc}", file=sys.stderr)
+        return 1
+
+    n = len(store.failures)
+    print(
+        f"OK: failures save store={args.store} failures={n} "
+        f"benchmark={store.benchmark_id or '<mixed>'}"
+    )
+    return 0
+
+
+def _cmd_retry(args: argparse.Namespace) -> int:
+    """Implement ``ai-bench retry <failure-store> --benchmark <dir>``."""
+    try:
+        outcomes = F.retry_failures(
+            args.store,
+            args.benchmark,
+            output=args.output,
+            model=args.model,
+            seed=args.seed,
+            predictions=args.predictions,
+            predictions_file=args.predictions_file,
+            replay=args.replay,
+        )
+    except F.FailureStoreError as exc:
+        print(f"ai-bench: retry failed: {exc}", file=sys.stderr)
+        return 1
+
+    counts = {"improved": 0, "regressed": 0, "unchanged": 0}
+    for outcome in outcomes:
+        counts[outcome.classification] = counts.get(outcome.classification, 0) + 1
+        print(
+            f"  {outcome.case_id}: {outcome.classification} "
+            f"(stored={outcome.stored_verdict} new={outcome.new_verdict})"
+        )
+    print(
+        f"OK: retry store={args.store} benchmark={args.benchmark} "
+        f"cases={len(outcomes)} improved={counts['improved']} "
+        f"regressed={counts['regressed']} unchanged={counts['unchanged']}"
+    )
+    return 0
+
+
+def _cmd_hard_set_export(args: argparse.Namespace) -> int:
+    """Implement ``ai-bench hard-set export <failure-store> --output <dir>``."""
+    try:
+        exported = F.export_hard_set(
+            args.store,
+            args.output,
+            benchmark_dir=args.benchmark,
+        )
+    except F.FailureStoreError as exc:
+        print(f"ai-bench: hard-set export failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"OK: hard-set export output={exported}")
+    return 0
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
@@ -296,12 +484,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_validate(args.benchmark)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "failures":
+        if args.failures_action == "save":
+            return _cmd_failures_save(args)
+        print(
+            "ai-bench: 'failures' requires an action (save). See `ai-bench failures --help`.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.command == "retry":
+        return _cmd_retry(args)
+    if args.command == "hard-set":
+        if args.hard_set_action == "export":
+            return _cmd_hard_set_export(args)
+        print(
+            "ai-bench: 'hard-set' requires an action (export). See `ai-bench hard-set --help`.",
+            file=sys.stderr,
+        )
+        return 2
 
-    # failures remains a placeholder stub owned by C09.
-    print(
-        f"ai-bench: '{args.command}' is not implemented yet.",
-        file=sys.stderr,
-    )
+    print(f"ai-bench: unknown command {args.command!r}.", file=sys.stderr)
     return 2
 
 

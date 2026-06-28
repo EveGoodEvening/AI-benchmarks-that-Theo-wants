@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: C01, C02, C03, C04, C05, C06, C07, and C08 implemented and verified; C09-C13 not started.
+Implementation state: C01, C02, C03, C04, C05, C06, C07, C08, and C09 implemented and verified; C10-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -238,7 +238,7 @@ A future session may run chunks in parallel only when they do not touch the same
 - Final branch-sensitive verification (C08): Orchestrator verification passed after the branch fix. `uv run pytest tests/test_git_tooling_benchmark.py::test_branch_sensitive_cases_lock_current_branch -q` -> passed. `uv run pytest tests/test_git_tooling_benchmark.py -q` -> 11 passed. `uv run ai-bench validate benchmarks/git-tooling` -> OK cases=24 smoke=4. `uv run ai-bench run benchmarks/git-tooling --replay benchmarks/git-tooling/sample_transcripts -o /tmp/c08-replay.json` -> exit 0 cases=24 pass=23 fail=1. `uv run pytest -q` -> passed, one skipped. C08 remains checked; C09+ remain unchecked.
 - Review-fix evidence (C08 branch-sensitive current_branch): Added explicit final `current_branch` assertions to the five branch-sensitive cases (`create-branch=feature`, `branch-list=main`, `cherry-pick=main`, `merge-fast-forward=main`, `merge-no-ff=main`) in `benchmarks/git-tooling/cases/{create-branch,branch-list,cherry-pick,merge-fast-forward,merge-no-ff}.yaml` and matching `current_branch` fields to the corresponding `sample_transcripts/*.json` `final_repo_state`, so the real state-check verifier scores the asserted branch instead of ignoring it. Extended `tests/test_git_tooling_benchmark.py` with `test_branch_sensitive_cases_lock_current_branch` locking both the case `state_check.git.current_branch` expectations and transcript `final_repo_state.current_branch` consistency. Final branch-sensitive verification is recorded above.
 
-### [ ] C09 — Failure-case preservation + retry + hard-set
+### [x] C09 — Failure-case preservation + retry + hard-set
 
 - Conventional Commit candidate: `feat(failures): preserve and retry benchmark failure cases`
 - Owned files/scope: `src/ai_bench/failures.py`, CLI additions in `src/ai_bench/cli.py`, `tests/test_failures.py`, optional `failures/README.md`. C09 consumes `schemas/failure-store.schema.json` (frozen by C02) and adds no schema files.
@@ -250,15 +250,17 @@ A future session may run chunks in parallel only when they do not touch the same
 - Review criteria: artifacts validate against `schemas/failure-store.schema.json` (frozen by C02); C09 adds no schema files; storage/dedup behavior explicit; verdict comparisons use verifiers; exported hard sets preserve provenance.
 - Review addendum: failure preservation must be exercised through the public save entry point against real C05 run-records, preserving run-record references and the full reproducibility determinant set.
 - Tasks:
-  - [ ] Implement versioned failure-case store conforming to the C02 failure-store schema.
-  - [ ] Capture failed task metadata and run-record references per the schema.
-  - [ ] Implement public preservation entry point `ai-bench failures save <run-record> --store <failure-store>` that reads schema-valid C05 run-records, extracts failed per-case verdicts, and writes/updates the failure store.
-  - [ ] Add end-to-end preservation test from actual `ai-bench run` record through `ai-bench failures save`, failure-store schema validation, retry, hard-set export, and exported-set run.
-  - [ ] Implement retry improved/regressed/unchanged reporting.
-  - [ ] Implement hard-set export.
-  - [ ] Add deduplication keyed by the full reproducibility determinant set from the failure-store schema (task/model/params/fixture-version alone is insufficient).
-  - [ ] Add dedup tests: same task/model/params with different seed or different environment hash are both retained.
-  - [ ] Run and record verification command and scenario.
+  - [x] Implement versioned failure-case store conforming to the C02 failure-store schema.
+  - [x] Capture failed task metadata and run-record references per the schema.
+  - [x] Implement public preservation entry point `ai-bench failures save <run-record> --store <failure-store>` that reads schema-valid C05 run-records, extracts failed per-case verdicts, and writes/updates the failure store.
+  - [x] Add end-to-end preservation test from actual `ai-bench run` record through `ai-bench failures save`, failure-store schema validation, retry, hard-set export, and exported-set run.
+  - [x] Implement retry improved/regressed/unchanged reporting.
+  - [x] Implement hard-set export.
+  - [x] Add deduplication keyed by the full reproducibility determinant set from the failure-store schema (task/model/params/fixture-version alone is insufficient).
+  - [x] Add dedup tests: same task/model/params with different seed or different environment hash are both retained.
+  - [x] Run and record verification command and scenario.
+
+- Verification evidence (C09): Verified after the red-test fix. `uv run pytest tests/test_failures.py::test_save_preserves_stub_failures_and_validates_against_schema -q` -> passed. `uv run pytest tests/test_failures.py -q` -> 5 passed. `uv run pytest tests/test_cli_smoke.py -q` -> 17 passed. `uv run pytest -q` -> passed, one skipped. Coverage includes saving failures from a real runner-produced record through the public `failures save` path with schema validation; retry improved/unchanged reporting; runnable hard-set export; dedup retaining same task/model/params under different seed or different environment hash; duplicate save deduplication; and CLI dispatch for failures/retry/hard-set.
 
 ### [ ] C10 — Community contribution scaffold + registry + template
 

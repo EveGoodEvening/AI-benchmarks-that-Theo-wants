@@ -3,9 +3,9 @@
 Verifies the CLI contract across chunks:
   * the package imports and exposes a version (C01),
   * the CLI exposes a ``--help`` path and a ``--version`` path (C01),
-  * placeholder subcommands report "not implemented yet" and exit non-zero
-    (only ``failures`` remains a placeholder, owned by C09; ``validate`` is
-    implemented in C03 and ``run`` in C05).
+  * implemented subcommands dispatch correctly: ``validate`` (C03), ``run``
+    (C05), and ``failures``/``retry``/``hard-set`` (C09). Subcommands requiring
+    a sub-action report a usage error and exit non-zero.
 """
 
 from __future__ import annotations
@@ -40,15 +40,14 @@ def test_cli_version_flag_exits_zero(capsys: pytest.CaptureFixture[str]) -> None
     assert ai_bench.__version__ in out
 
 
-def test_cli_placeholder_subcommands_are_not_implemented(capsys: pytest.CaptureFixture[str]) -> None:
-    # validate is implemented in C03; run is implemented in C05 (requires a
-    # benchmark argument, so it no longer reports "not implemented yet").
-    # failures remains a placeholder stub owned by C09.
-    for name in ("failures",):
-        rc = cli.main([name])
-        err = capsys.readouterr().err
-        assert rc != 0
-        assert "not implemented yet" in err
+def test_cli_failures_subcommand_requires_action(capsys: pytest.CaptureFixture[str]) -> None:
+    # validate is implemented in C03; run is implemented in C05; failures is
+    # implemented in C09 and requires a sub-action (save). With no action it
+    # reports the usage error and exits non-zero.
+    rc = cli.main(["failures"])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "requires an action" in err
 
 
 def test_cli_help_subprocess_runs() -> None:
