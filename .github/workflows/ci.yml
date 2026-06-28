@@ -1,0 +1,83 @@
+# CI workflow for ai-bench (chunk C11).
+#
+# Runs on pull requests and pushes to the default branch. The gate mirrors the
+# C11 verification commands:
+#   1. uv sync                -> dependency lock is installable
+#   2. uv run pytest -q       -> full test suite (conformance + smoke + units)
+#   3. uv run ai-bench validate (no-arg) -> release validate-all gate, excludes
+#      benchmarks/_template/**, expected to PASS on a healthy repo
+#   4. uv run ai-bench run benchmarks/description-label --tag smoke --model stub
+#      -> stub smoke run for the text benchmark (C05 --tag smoke selector)
+#   5. uv run ai-bench run benchmarks/git-tooling --tag smoke --model stub
+#      -> stub smoke run for the tool-task benchmark
+#   6. uv run ai-bench run benchmarks/description-label --predictions ...
+#      -> non-stub offline scoring: real text outputs scored by real C04
+#         verifiers, no secrets/network
+#   7. uv run ai-bench run benchmarks/git-tooling --replay ...
+#      -> non-stub offline transcript replay: real agent transcripts scored by
+#         the real state-check verifier (C07.2), no secrets/network/host mutation
+#
+# CI relies on the C05 ai-bench run process-exit contract: non-zero exits fail
+# CI as validation/load/runtime/infrastructure/verifier/run-record failures,
+# while failed case verdicts or low aggregate scores are preserved in
+# schema-valid run-records and do not by themselves fail the command.
+#
+# No secrets or live provider credentials are required. Run-records are written
+# to the CI runner's temp/output paths and are not committed.
+#
+# Remote CI evidence rule (authoritative): C11 and the final gate are not
+# checked until a workflow run URL, the exact commit SHA, and a
+# passing/successful outcome for that SHA are recorded in the tracker, OR an
+# explicit approved deferral with owner/date/rationale is recorded. Failed,
+# cancelled, skipped, timed-out, or neutral outcomes do not satisfy this rule.
+# A BLOCKED note with owner: TBD or date: TBD is NOT acceptable.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Conformance, smoke, and non-stub scoring
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Synchronize dependencies
+        run: uv sync --frozen
+
+      - name: Run full test suite (conformance + smoke + units)
+        run: uv run pytest -q
+
+      - name: Release validate-all gate (excludes benchmarks/_template/**)
+        run: uv run ai-bench validate
+
+      - name: Stub smoke run - description-label
+        run: uv run ai-bench run benchmarks/description-label --tag smoke --model stub
+
+      - name: Stub smoke run - git-tooling
+        run: uv run ai-bench run benchmarks/git-tooling --tag smoke --model stub
+
+      - name: Non-stub offline scoring - description-label (--predictions)
+        run: uv run ai-bench run benchmarks/description-label --predictions benchmarks/description-label/sample_predictions
+
+      - name: Non-stub offline transcript replay - git-tooling (--replay)
+        run: uv run ai-bench run benchmarks/git-tooling --replay benchmarks/git-tooling/sample_transcripts
