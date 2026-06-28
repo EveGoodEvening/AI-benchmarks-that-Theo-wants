@@ -362,6 +362,152 @@ def test_save_without_benchmark_falls_back_to_rendered_prompt(tmp_path: Path) ->
     assert store.failures[0].task_input
 
 
+# --- C09 review fixes: path traversal, tool-task export, duplicate retention ---
+
+
+def test_export_confines_path_traversal_case_id(tmp_path: Path) -> None:
+    """A malicious case_id carrying path separators cannot escape cases/.
+
+    The exported case id is sanitized to the C02 case-id pattern and the
+    resolved case file path is verified to remain under ``cases/``, so a
+    ``case_id`` like ``../../etc/evil`` is written as a safe filename inside
+    the export rather than traversing out of it.
+    """
+    store_path = tmp_path / "traversal-store.json"
+    rec = {
+        "schema_version": "1",
+        "storage_version": "1",
+        "failures": [
+            _minimal_failure_dict(benchmark_id="b1", case_id="../../etc/evil"),
+        ],
+    }
+    F.write_failure_store(rec, store_path)
+    out = tmp_path / "out"
+    F.export_hard_set(store_path, out)
+    # No file was written outside the export directory.
+    assert not (tmp_path / "etc").exists()
+    case_files = list((out / "cases").glob("*.yaml"))
+    assert len(case_files) == 1
+    # The case file resolves strictly under cases/.
+    cases_root = (out / "cases").resolve()
+    assert case_files[0].resolve().relative_to(cases_root)
+    # The exported id is pattern-safe (no path separators).
+    exported_id = L.load_yaml(case_files[0])["id"]
+    assert "/" not in exported_id and ".." not in exported_id
+
+
+def test_export_confines_absolute_case_id(tmp_path: Path) -> None:
+    """An absolute-path case_id is sanitized and confined under cases/."""
+    store_path = tmp_path / "abs-store.json"
+    rec = {
+        "schema_version": "1",
+        "storage_version": "1",
+        "failures": [
+            _minimal_failure_dict(benchmark_id="b1", case_id="/etc/passwd"),
+        ],
+    }
+    F.write_failure_store(rec, store_path)
+    out = tmp_path / "out"
+    F.export_hard_set(store_path, out)
+    case_files = list((out / "cases").glob("*.yaml"))
+    assert len(case_files) == 1
+    cases_root = (out / "cases").resolve()
+    assert case_files[0].resolve().relative_to(cases_root)
+    assert not (tmp_path / "etc").exists()
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_GIT_TOOLING_DIR = _REPO_ROOT / "benchmarks" / "git-tooling"
+
+
+def test_export_git_tooling_hard_set_preserves_fixtures_state_check_and_runs(
+    tmp_path: Path,
+) -> None:
+    """Exported C08/git-tooling hard set preserves fixtures, state_check, verifier,
+    validates as a benchmark, and runs through the public runner."""
+    if not _GIT_TOOLING_DIR.is_dir():
+        pytest.skip("git-tooling benchmark not present")
+
+    record_path = tmp_path / "c08-stub-record.json"
+    store_path = tmp_path / "c08-store.json"
+    export_dir = tmp_path / "c08-hardset"
+
+    # Real run-record from the public runner (stub -> some cases fail).
+    result = R.run_benchmark(_GIT_TOOLING_DIR, model="stub", output=record_path)
+    assert result.record["aggregate"]["n_fail"] >= 1
+
+    store = F.save_failures(record_path, store_path, benchmark_dir=_GIT_TOOLING_DIR)
+    assert len(store.failures) >= 1
+    _assert_store_validates(store_path)
+
+    exported = F.export_hard_set(store_path, export_dir, benchmark_dir=_GIT_TOOLING_DIR)
+    assert exported == export_dir
+
+    # The exported subset must validate as a benchmark via the loader.
+    manifest = L.load_benchmark(export_dir)
+    cases = L.load_cases(export_dir)
+    assert len(cases) == len(store.failures)
+
+    # Every exported tool-task case preserves the state_check spec and verifier
+    # override from the source benchmark, and references a fixture copied into
+    # the export (when the source case had one).
+    source_cases = {c[1]["id"]: c[1] for c in L.load_cases(_GIT_TOOLING_DIR)}
+    for _, case in cases:
+        src = source_cases.get(case["id"])
+        if src is None:
+            continue
+        if src.get("state_check") is not None:
+            assert case.get("state_check") == src["state_check"], case["id"]
+        if src.get("verifier") is not None:
+            assert case.get("verifier") == src["verifier"], case["id"]
+        src_input = src.get("input")
+        if isinstance(src_input, Mapping) and src_input.get("fixture"):
+            # Fixture path rewritten to the copied location under fixtures/.
+            out_input = case["input"]
+            assert isinstance(out_input, Mapping), case["id"]
+            assert out_input["fixture"].startswith("fixtures/"), case["id"]
+            copied = export_dir / out_input["fixture"]
+            assert copied.exists(), f"fixture not copied for {case['id']}: {copied}"
+
+    # Fixtures directory exists in the export.
+    assert (export_dir / "fixtures").is_dir()
+
+    # The exported subset is runnable via the public runner (exit 0 per C05).
+    run = R.run_benchmark(
+        exported, output=tmp_path / "c08-hardset-run.json", model="stub"
+    )
+    assert run.record["aggregate"]["n_cases"] == len(store.failures)
+
+
+def test_export_retains_duplicate_case_id_with_different_seed(tmp_path: Path) -> None:
+    """Two retained variants with the same case_id but different seed are both
+    exported with unique ids rather than overwriting one another."""
+    store_path = tmp_path / "dup-store.json"
+    rec_a = _minimal_failure_dict(benchmark_id="b1", case_id="case-1")
+    rec_a["seed"] = 0
+    rec_b = _minimal_failure_dict(benchmark_id="b1", case_id="case-1")
+    rec_b["seed"] = 1
+    # Distinct environment hashes so dedup keys differ.
+    rec_a["environment_hash"] = "sha256:" + "a" * 60
+    rec_b["environment_hash"] = "sha256:" + "b" * 60
+    store = {
+        "schema_version": "1",
+        "storage_version": "1",
+        "failures": [rec_a, rec_b],
+    }
+    F.write_failure_store(store, store_path)
+    assert len(F.load_failure_store(store_path).failures) == 2
+
+    out = tmp_path / "out"
+    F.export_hard_set(store_path, out)
+    case_files = list((out / "cases").glob("*.yaml"))
+    assert len(case_files) == 2, "both duplicate variants must be exported"
+    ids = {L.load_yaml(f)["id"] for f in case_files}
+    assert len(ids) == 2, "exported case ids must be unique"
+    # Both ids derive from the original case id.
+    assert all(i.startswith("case-1") for i in ids)
+
+
 # --- Helpers ----------------------------------------------------------------
 
 

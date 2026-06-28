@@ -35,6 +35,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -696,6 +698,110 @@ def _hard_set_benchmark_id(source_benchmark_id: str) -> str:
     return f"{safe}-hardset"
 
 
+# Pattern enforced by the C02 case schema for case ids.  Exported case ids must
+# continue to satisfy it so the exported subset validates via the loader.
+_CASE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _safe_case_filename(case_id: str, *, cases_dir: Path) -> tuple[str, Path]:
+    """Return a sanitized case id and a path-traversal-safe case file path.
+
+    The exported case id is constrained to the C02 case-id pattern
+    (``^[a-z0-9][a-z0-9_-]*$``) so a malicious ``case_id`` carrying path
+    separators (``../``, absolute paths) cannot escape ``cases_dir``.  The
+    resolved destination is verified to remain under ``cases_dir``.
+    """
+    raw = case_id.lower()
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in raw)
+    safe = safe.strip("-_")
+    if not safe or not _CASE_ID_PATTERN.match(safe):
+        raise FailureStoreError(
+            f"cannot export case with unsafe id {case_id!r}: sanitized to {safe!r}"
+        )
+    path = (cases_dir / f"{safe}.yaml").resolve()
+    try:
+        path.relative_to(cases_dir.resolve())
+    except ValueError:
+        raise FailureStoreError(
+            f"exported case path {path} escapes cases directory {cases_dir}"
+        ) from None
+    return safe, path
+
+
+def _load_source_cases(manifest: L.Manifest) -> dict[str, Mapping[str, Any]]:
+    """Load source benchmark cases keyed by case id for export inheritance."""
+    rows = L.load_cases(manifest)
+    by_id: dict[str, Mapping[str, Any]] = {}
+    for _, row in rows:
+        cid = row.get("id")
+        if cid is not None:
+            by_id[str(cid)] = row
+    return by_id
+
+
+def _copy_fixture_for_export(
+    source_case: Mapping[str, Any],
+    *,
+    source_benchmark_dir: Path,
+    export_dir: Path,
+    case_id: str,
+) -> str | None:
+    """Copy a referenced fixture into the export and return the new relative path.
+
+    Tool-task cases reference fixtures via ``input.fixture`` (a path relative to
+    the source benchmark directory).  The fixture tree is copied under
+    ``<export_dir>/fixtures/`` and the case's ``input.fixture`` is rewritten to
+    point at the copied location so the exported subset is self-contained and
+    runnable without the source benchmark.  Returns the new relative path, or
+    ``None`` when the case has no fixture.
+    """
+    input_field = source_case.get("input")
+    if not isinstance(input_field, Mapping):
+        return None
+    fixture_rel = input_field.get("fixture")
+    if not isinstance(fixture_rel, str) or not fixture_rel:
+        return None
+    fixture_path = Path(fixture_rel)
+    if fixture_path.is_absolute():
+        raise FailureStoreError(
+            f"case {case_id!r} fixture path must be relative: {fixture_rel!r}"
+        )
+    base = source_benchmark_dir.resolve()
+    source = (base / fixture_path).resolve()
+    try:
+        source.relative_to(base)
+    except ValueError:
+        raise FailureStoreError(
+            f"case {case_id!r} fixture path escapes benchmark directory: {fixture_rel!r}"
+        ) from None
+    if not source.exists():
+        raise FailureStoreError(
+            f"case {case_id!r} fixture not found: {source}"
+        )
+    dest_root = (export_dir / "fixtures").resolve()
+    dest_root.mkdir(parents=True, exist_ok=True)
+    # Mirror the fixture under fixtures/<original-relative-path> so distinct
+    # cases referencing the same fixture do not collide and the relative path
+    # remains stable.
+    dest = (dest_root / fixture_path).resolve()
+    try:
+        dest.relative_to(dest_root)
+    except ValueError:
+        raise FailureStoreError(
+            f"case {case_id!r} fixture destination escapes export fixtures dir: {dest}"
+        ) from None
+    if dest.exists():
+        # Already copied (e.g. a shared seed fixture referenced by multiple
+        # cases); leave the existing copy in place.
+        return f"fixtures/{fixture_path.as_posix()}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, dest, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source, dest)
+    return f"fixtures/{fixture_path.as_posix()}"
+
+
 def export_hard_set(
     store_path: Path | str,
     output_dir: Path | str,
@@ -713,9 +819,19 @@ def export_hard_set(
 
     When ``benchmark_dir`` is provided, the exported manifest inherits the
     source benchmark's metric, task type, prompt template, and sampling config
-    so the subset is directly runnable via ``ai-bench run``.  When omitted, a
-    minimal manifest is synthesized from the failure records' determinant
-    fields.
+    so the subset is directly runnable via ``ai-bench run``.  Tool-task
+    fixtures referenced by ``input.fixture`` are copied into the export and the
+    case ``input.fixture`` path is rewritten to the copied location; per-case
+    ``state_check`` specs and ``verifier`` overrides are preserved so the
+    exported subset validates and scores through the real verifier.  When
+    ``benchmark_dir`` is omitted, a minimal manifest is synthesized from the
+    failure records' determinant fields.
+
+    Exported case ids are sanitized to the C02 case-id pattern and the resolved
+    case file path is verified to remain under ``cases/`` so a malicious
+    ``case_id`` cannot traverse outside the export.  Records that share a
+    ``case_id`` but differ in seed/environment (distinct determinant sets) are
+    exported with unique suffixed ids so both variants are retained.
 
     Returns the exported benchmark directory path.
     """
@@ -724,7 +840,10 @@ def export_hard_set(
         raise FailureStoreError("cannot export an empty failure store")
 
     source_manifest: Mapping[str, Any] | None = None
+    source_cases: dict[str, Mapping[str, Any]] = {}
+    source_benchmark_dir: Path | None = None
     if benchmark_dir is not None:
+        source_benchmark_dir = Path(benchmark_dir)
         try:
             manifest_handle = L.load_benchmark(benchmark_dir)
         except (L.LoadError, L.ValidationError) as exc:
@@ -732,6 +851,7 @@ def export_hard_set(
                 f"could not load source benchmark for export: {exc}"
             ) from exc
         source_manifest = manifest_handle.data
+        source_cases = _load_source_cases(manifest_handle)
 
     output_dir = Path(output_dir)
     cases_dir = output_dir / "cases"
@@ -759,10 +879,57 @@ def export_hard_set(
         encoding="utf-8",
     )
 
-    # Write case files.
+    # Write case files.  Records sharing a case_id but differing in seed/env
+    # (distinct determinant sets) get unique suffixed exported ids so both
+    # variants are retained rather than overwriting one another.
+    used_exported_ids: set[str] = set()
+    seen_base_ids: dict[str, int] = {}
     for rec in store.failures:
-        case_doc = _case_from_failure(rec)
-        case_path = cases_dir / f"{rec.case_id}.yaml"
+        source_case = source_cases.get(rec.case_id)
+        new_fixture_rel: str | None = None
+        if source_case is not None and source_benchmark_dir is not None:
+            new_fixture_rel = _copy_fixture_for_export(
+                source_case,
+                source_benchmark_dir=source_benchmark_dir,
+                export_dir=output_dir,
+                case_id=rec.case_id,
+            )
+        case_doc = _case_from_failure(
+            rec,
+            source_case=source_case,
+            new_fixture_rel=new_fixture_rel,
+        )
+        base_id, case_path = _safe_case_filename(rec.case_id, cases_dir=cases_dir)
+        # Disambiguate duplicate exported ids by appending a short suffix
+        # derived from the dedup key so both variants are kept.
+        exported_id = base_id
+        if base_id in seen_base_ids:
+            n = seen_base_ids[base_id] + 1
+            seen_base_ids[base_id] = n
+            suffix = rec.dedup_key or ""
+            # Strip the leading "sha256:" and take 8 hex chars for a stable,
+            # case-id-safe suffix.
+            if suffix.startswith("sha256:"):
+                suffix = suffix[len("sha256:"):]
+            suffix = re.sub(r"[^a-z0-9_-]", "", suffix.lower())[:8]
+            if not suffix:
+                suffix = f"{n}"
+            exported_id = f"{base_id}-{suffix}"
+            if not _CASE_ID_PATTERN.match(exported_id) or exported_id in used_exported_ids:
+                # Fall back to a numeric suffix if the hash suffix collides or
+                # is not pattern-safe.
+                exported_id = f"{base_id}-{n}"
+            _, case_path = _safe_case_filename(exported_id, cases_dir=cases_dir)
+        else:
+            seen_base_ids[base_id] = 0
+        # Final guard: never write two cases to the same path.
+        if exported_id in used_exported_ids:
+            n = seen_base_ids[base_id] + 1
+            seen_base_ids[base_id] = n
+            exported_id = f"{base_id}-{n}"
+            _, case_path = _safe_case_filename(exported_id, cases_dir=cases_dir)
+        used_exported_ids.add(exported_id)
+        case_doc["id"] = exported_id
         case_path.write_text(
             yaml.safe_dump(_clean_for_yaml(case_doc), sort_keys=False),
             encoding="utf-8",
@@ -834,13 +1001,35 @@ def _verifier_name_from_version(verifier_version: str) -> str:
     return verifier_version
 
 
-def _case_from_failure(rec: T.FailureRecord) -> dict[str, Any]:
-    """Build an exported case document from a preserved failure record."""
+def _case_from_failure(
+    rec: T.FailureRecord,
+    *,
+    source_case: Mapping[str, Any] | None = None,
+    new_fixture_rel: str | None = None,
+) -> dict[str, Any]:
+    """Build an exported case document from a preserved failure record.
+
+    When ``source_case`` is provided (the on-disk source benchmark case), the
+    exported case preserves the per-case ``state_check`` spec and ``verifier``
+    override so tool-task hard sets validate and score through the real
+    verifier.  When ``new_fixture_rel`` is provided, the case ``input.fixture``
+    path is rewritten to the copied fixture location inside the export.
+    """
     task_input = rec.task_input
     if isinstance(task_input, Mapping):
         input_field: Any = dict(task_input)
     else:
         input_field = task_input
+
+    # Rewrite the fixture path to the copied location inside the export so the
+    # exported subset is self-contained.
+    if (
+        new_fixture_rel is not None
+        and isinstance(input_field, Mapping)
+        and "fixture" in input_field
+    ):
+        input_field = dict(input_field)
+        input_field["fixture"] = new_fixture_rel
 
     case: dict[str, Any] = {
         "schema_version": T.SCHEMA_VERSION,
@@ -858,6 +1047,17 @@ def _case_from_failure(rec: T.FailureRecord) -> dict[str, Any]:
             ),
         },
     }
+
+    # Preserve per-case verifier override and state_check spec from the source
+    # benchmark case so tool-task hard sets validate (state_check requires a
+    # state_check block when verifier is state_check) and score through the
+    # real verifier rather than the benchmark-level default.
+    if source_case is not None:
+        if source_case.get("verifier") is not None:
+            case["verifier"] = source_case["verifier"]
+        if source_case.get("state_check") is not None:
+            case["state_check"] = source_case["state_check"]
+
     if rec.expected is None:
         case["expected_metadata"] = rec.expected_metadata or {
             "reason": "preserved_failure_case",
