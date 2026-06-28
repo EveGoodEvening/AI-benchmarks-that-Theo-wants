@@ -508,6 +508,89 @@ def test_export_retains_duplicate_case_id_with_different_seed(tmp_path: Path) ->
     assert all(i.startswith("case-1") for i in ids)
 
 
+# --- Hard-set export: symlink confinement + path-based prompt template --------
+
+
+def test_export_rejects_fixture_with_nested_symlink(tmp_path: Path) -> None:
+    """A fixture directory containing a nested symlink is rejected at export.
+
+    The fixture tree is walked without following symlinks, so a symlink inside
+    a fixture directory (pointing at a host file) cannot be copied into the
+    export or exfiltrate host files.
+    """
+    benchmark = _make_fixture_benchmark_with_nested_symlink(tmp_path)
+    record_path = tmp_path / "symlink-record.json"
+    store_path = tmp_path / "symlink-store.json"
+    export_dir = tmp_path / "symlink-hardset"
+
+    R.run_benchmark(benchmark, output=record_path, model="stub", now=_fixed_clock())
+    F.save_failures(record_path, store_path, benchmark_dir=benchmark)
+    assert len(F.load_failure_store(store_path).failures) >= 1
+
+    with pytest.raises(F.FailureStoreError, match="symlink"):
+        F.export_hard_set(store_path, export_dir, benchmark_dir=benchmark)
+    # The symlink target (host secret) was not copied into the export.
+    assert not (export_dir / "fixtures" / "seed" / "secret.link").exists()
+
+
+def test_export_runs_with_path_based_prompt_template(tmp_path: Path) -> None:
+    """A source benchmark with ``prompt_template.path`` exports a self-contained
+    hard set: the template file is copied into the export and the manifest's
+    ``prompt_template.path`` is rewritten to the copied relative path, so the
+    exported set runs through the public runner without the source benchmark.
+    """
+    benchmark = _make_path_template_benchmark(tmp_path)
+    record_path = tmp_path / "ptmpl-record.json"
+    store_path = tmp_path / "ptmpl-store.json"
+    export_dir = tmp_path / "ptmpl-hardset"
+
+    R.run_benchmark(benchmark, output=record_path, model="stub", now=_fixed_clock())
+    F.save_failures(record_path, store_path, benchmark_dir=benchmark)
+    assert len(F.load_failure_store(store_path).failures) == 1
+
+    exported = F.export_hard_set(store_path, export_dir, benchmark_dir=benchmark)
+    assert exported == export_dir
+
+    # The exported manifest validates and references a copied template path.
+    manifest = L.load_benchmark(export_dir)
+    pt = manifest.data["prompt_template"]
+    assert pt["path"].startswith("prompt_templates/"), pt
+    copied = export_dir / pt["path"]
+    assert copied.is_file(), f"prompt template not copied: {copied}"
+    # The copied template content matches the source.
+    src_tmpl = (benchmark / "templates" / "answer.txt").read_text(encoding="utf-8")
+    assert copied.read_text(encoding="utf-8") == src_tmpl
+
+    # The exported subset is runnable via the public runner.
+    run = R.run_benchmark(
+        exported, output=tmp_path / "ptmpl-hardset-run.json", model="stub",
+        now=_fixed_clock(),
+    )
+    assert run.record["aggregate"]["n_cases"] == 1
+
+
+def test_export_rejects_symlinked_prompt_template_path(tmp_path: Path) -> None:
+    """A ``prompt_template.path`` that is a symlink is rejected at export.
+
+    The run-record/store is built from a valid (non-symlink) path-template
+    benchmark so the runner can produce a record; export is then pointed at a
+    benchmark whose ``prompt_template.path`` is a symlink to a host file, which
+    ``export_hard_set`` must reject without following the link.
+    """
+    valid_benchmark = _make_path_template_benchmark(tmp_path, symlink_template=False)
+    symlink_benchmark = _make_path_template_benchmark(tmp_path, symlink_template=True)
+    record_path = tmp_path / "ptmpl-sym-record.json"
+    store_path = tmp_path / "ptmpl-sym-store.json"
+    export_dir = tmp_path / "ptmpl-sym-hardset"
+
+    R.run_benchmark(valid_benchmark, output=record_path, model="stub", now=_fixed_clock())
+    F.save_failures(record_path, store_path, benchmark_dir=valid_benchmark)
+    assert len(F.load_failure_store(store_path).failures) == 1
+
+    with pytest.raises(F.FailureStoreError, match="symlink"):
+        F.export_hard_set(store_path, export_dir, benchmark_dir=symlink_benchmark)
+
+
 # --- Helpers ----------------------------------------------------------------
 
 
@@ -614,3 +697,104 @@ def _fixed_clock() -> Any:
 
 def _write_yaml(path: Path, data: Mapping[str, Any]) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def _make_fixture_benchmark_with_nested_symlink(tmp_path: Path) -> Path:
+    """A text benchmark whose case references a fixture directory containing a
+    nested symlink that points outside the benchmark directory.
+
+    The fixture tree is a real directory with a regular file plus a symlink
+    that targets a host file outside the benchmark; the export must reject it.
+    """
+    bdir = tmp_path / "symlink-benchmark"
+    cases = bdir / "cases"
+    fixtures = bdir / "fixtures" / "seed"
+    cases.mkdir(parents=True)
+    fixtures.mkdir(parents=True)
+    (fixtures / "README.md").write_text("seed", encoding="utf-8")
+    # Host file outside the benchmark directory.
+    host_secret = tmp_path / "host-secret.txt"
+    host_secret.write_text("host-secret", encoding="utf-8")
+    # Nested symlink inside the fixture directory pointing at the host file.
+    (fixtures / "secret.link").symlink_to(host_secret)
+    _write_yaml(
+        bdir / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "symlink-c09",
+            "name": "Symlink C09",
+            "description": "Nested-symlink fixture confinement.",
+            "domain": "labels",
+            "task_type": "text",
+            "metric": {"verifier": "exact_match", "params": {"case_sensitive": True}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["text"],
+            "status": "experimental",
+            "prompt_template": {"version": "0.1.0", "template": "Answer: {input}"},
+            "sampling": {"temperature": 0.0},
+        },
+    )
+    _write_yaml(
+        cases / "case-1.yaml",
+        {
+            "schema_version": "1",
+            "id": "case-1",
+            "input": {"prompt": "do seed", "fixture": "fixtures/seed"},
+            "expected": "state-check",
+            "tags": ["smoke"],
+            "difficulty": "easy",
+            "provenance": {"source": "original", "license": "MIT"},
+        },
+    )
+    return bdir
+
+
+def _make_path_template_benchmark(
+    tmp_path: Path, *, symlink_template: bool = False
+) -> Path:
+    """A text benchmark with a path-only ``prompt_template``.
+
+    The template file lives at ``templates/answer.txt`` relative to the
+    benchmark directory.  When ``symlink_template`` is set, the template path
+    is a symlink to a host file so export rejection can be exercised.
+    """
+    bdir = tmp_path / ("ptmpl-sym-benchmark" if symlink_template else "ptmpl-benchmark")
+    cases = bdir / "cases"
+    templates = bdir / "templates"
+    cases.mkdir(parents=True)
+    templates.mkdir(parents=True)
+    tmpl_text = "Answer: {input}"
+    if symlink_template:
+        host_tmpl = tmp_path / "host-answer.txt"
+        host_tmpl.write_text(tmpl_text, encoding="utf-8")
+        (templates / "answer.txt").symlink_to(host_tmpl)
+    else:
+        (templates / "answer.txt").write_text(tmpl_text, encoding="utf-8")
+    _write_yaml(
+        bdir / "benchmark.yaml",
+        {
+            "schema_version": "1",
+            "id": "ptmpl-c09",
+            "name": "Path Template C09",
+            "description": "Path-based prompt template export.",
+            "domain": "labels",
+            "task_type": "text",
+            "metric": {"verifier": "exact_match", "params": {"case_sensitive": True}},
+            "version": "0.1.0",
+            "contributor": {"name": "tests"},
+            "license": "MIT",
+            "case_glob": "cases/*.yaml",
+            "tags": ["text"],
+            "status": "experimental",
+            "prompt_template": {"version": "0.1.0", "path": "templates/answer.txt"},
+            "sampling": {"temperature": 0.0},
+        },
+    )
+    _write_yaml(
+        cases / "case-1.yaml",
+        _text_case("case-1", "First", "alpha", ["smoke"]),
+    )
+    return bdir

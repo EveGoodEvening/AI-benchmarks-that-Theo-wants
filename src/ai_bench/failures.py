@@ -33,6 +33,7 @@ run-record/exit semantics, and the C06/C08 benchmarks via the public runner.
 from __future__ import annotations
 
 import copy
+import os
 import hashlib
 import json
 import re
@@ -754,6 +755,12 @@ def _copy_fixture_for_export(
     point at the copied location so the exported subset is self-contained and
     runnable without the source benchmark.  Returns the new relative path, or
     ``None`` when the case has no fixture.
+
+    The fixture tree is walked recursively without following symlinks: any
+    symlink encountered in the tree (including nested symlinks inside
+    directories) is rejected, and every resolved real path is verified to
+    remain under the source benchmark directory so a fixture cannot exfiltrate
+    host files via symlink chains.
     """
     input_field = source_case.get("input")
     if not isinstance(input_field, Mapping):
@@ -795,11 +802,66 @@ def _copy_fixture_for_export(
         # cases); leave the existing copy in place.
         return f"fixtures/{fixture_path.as_posix()}"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if source.is_dir():
-        shutil.copytree(source, dest, dirs_exist_ok=True)
+    _copy_fixture_tree(source, dest, base=base, case_id=case_id)
+    return f"fixtures/{fixture_path.as_posix()}"
+
+
+def _copy_fixture_tree(
+    source: Path,
+    dest: Path,
+    *,
+    base: Path,
+    case_id: str,
+) -> None:
+    """Copy a fixture file or directory tree without following symlinks.
+
+    Every filesystem entry encountered (the root and, for directories, every
+    descendant) is checked: symlinks are rejected outright, and each resolved
+    real path must remain under ``base`` (the resolved source benchmark
+    directory).  This prevents nested symlinks inside a fixture directory from
+    copying host files into the export.
+    """
+    _assert_fixture_safe(source, base=base, case_id=case_id)
+    if source.is_dir() and not source.is_symlink():
+        dest.mkdir(parents=True, exist_ok=True)
+        # os.walk with followlinks=False never descends into symlinked dirs,
+        # but we still reject any symlink entries (files or dirs) we see so
+        # nothing escapes the benchmark directory via a symlink chain.
+        for root, dirnames, filenames in os.walk(source, followlinks=False):
+            root_path = Path(root)
+            rel_root = root_path.relative_to(source)
+            dest_root_dir = dest / rel_root if rel_root != Path(".") else dest
+            for name in dirnames + filenames:
+                entry = root_path / name
+                _assert_fixture_safe(entry, base=base, case_id=case_id)
+                entry_dest = dest_root_dir / name
+                if entry.is_dir() and not entry.is_symlink():
+                    entry_dest.mkdir(parents=True, exist_ok=True)
+                elif entry.is_symlink():
+                    # Rejected above; keep the guard explicit.
+                    raise FailureStoreError(
+                        f"case {case_id!r} fixture contains symlink: {entry}"
+                    )
+                else:
+                    entry_dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(entry, entry_dest)
     else:
         shutil.copy2(source, dest)
-    return f"fixtures/{fixture_path.as_posix()}"
+
+
+def _assert_fixture_safe(path: Path, *, base: Path, case_id: str) -> None:
+    """Reject symlinks and any resolved path outside the source benchmark."""
+    if path.is_symlink():
+        raise FailureStoreError(
+            f"case {case_id!r} fixture contains symlink: {path}"
+        )
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        raise FailureStoreError(
+            f"case {case_id!r} fixture path escapes benchmark directory: {path}"
+        ) from None
 
 
 def export_hard_set(
@@ -870,6 +932,12 @@ def export_hard_set(
     # Build the manifest.
     if source_manifest is not None:
         manifest = _manifest_from_source(source_manifest, new_benchmark_id, store)
+        if source_benchmark_dir is not None:
+            _rewrite_prompt_template_for_export(
+                manifest,
+                source_benchmark_dir=source_benchmark_dir,
+                export_dir=output_dir,
+            )
     else:
         manifest = _manifest_from_failures(store, new_benchmark_id)
 
@@ -962,6 +1030,75 @@ def _manifest_from_source(
             "contact": "https://example.org/ai-bench",
         }
     return out
+
+
+def _rewrite_prompt_template_for_export(
+    manifest: dict[str, Any],
+    *,
+    source_benchmark_dir: Path,
+    export_dir: Path,
+) -> None:
+    """Make the exported manifest's prompt template self-contained.
+
+    When the source manifest carries ``prompt_template.path`` (a path-only
+    template resolved relative to the source benchmark directory), the template
+    file is copied into the export under ``prompt_templates/`` and
+    ``prompt_template.path`` is rewritten to the copied relative path so the
+    exported hard set runs without the source benchmark.  The path is confined
+    to the source benchmark directory (absolute or escaping paths are rejected
+    as ``FailureStoreError``); symlinks are rejected so host files cannot be
+    exfiltrated via a path-only template.
+
+    Inline ``prompt_template.template`` is left untouched (already
+    self-contained).  A missing or unreadable template file is an error.
+    """
+    pt = manifest.get("prompt_template")
+    if not isinstance(pt, Mapping):
+        return
+    tmpl = pt.get("template")
+    path_rel = pt.get("path")
+    if tmpl is not None or not isinstance(path_rel, str) or not path_rel:
+        return
+    path = Path(path_rel)
+    if path.is_absolute():
+        raise FailureStoreError(
+            f"prompt_template.path must be relative: {path_rel!r}"
+        )
+    base = source_benchmark_dir.resolve()
+    candidate = base / path
+    # Check for a symlink on the un-resolved path *before* resolving, so a
+    # symlinked template is rejected with a symlink-specific message rather
+    # than followed and reported as an escape (which would leak the target).
+    if candidate.is_symlink():
+        raise FailureStoreError(
+            f"prompt_template.path is a symlink: {path_rel!r}"
+        )
+    source = candidate.resolve()
+    try:
+        source.relative_to(base)
+    except ValueError:
+        raise FailureStoreError(
+            f"prompt_template.path escapes benchmark directory: {path_rel!r}"
+        ) from None
+    if not source.is_file():
+        raise FailureStoreError(
+            f"prompt_template.path not found: {source}"
+        )
+    dest_root = (export_dir / "prompt_templates").resolve()
+    dest_root.mkdir(parents=True, exist_ok=True)
+    dest = (dest_root / path).resolve()
+    try:
+        dest.relative_to(dest_root)
+    except ValueError:
+        raise FailureStoreError(
+            f"prompt_template.path destination escapes export: {dest}"
+        ) from None
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+    new_pt = dict(pt)
+    new_pt["path"] = f"prompt_templates/{path.as_posix()}"
+    manifest["prompt_template"] = new_pt
 
 
 def _manifest_from_failures(store: T.FailureStore, new_id: str) -> dict[str, Any]:
