@@ -1,0 +1,83 @@
+# Benchmark manifest template.
+#
+# Copy this directory to benchmarks/<your-benchmark-id>/ and edit the fields
+# below. Every field here is validated against schemas/benchmark.schema.json
+# by `ai-bench validate <your-benchmark-dir>`. See CONTRIBUTING.md for the
+# full contribution workflow.
+#
+# This template is excluded from discovery, the registry, and the release
+# validate-all gate (benchmarks/_template/** is never listed as a real
+# benchmark). It is validated separately by tests/test_template.py.
+schema_version: "1"
+
+# Stable, unique benchmark identifier (slug). Lowercase, digits, and hyphens
+# only. Must be unique across the whole suite; discovery rejects duplicates.
+id: my-benchmark
+
+# Human-readable benchmark name.
+name: My benchmark
+
+# Short description of what the benchmark measures.
+description: >
+  One or two sentences describing what this benchmark measures and why it
+  matters. Replace this text with your own.
+
+# Domain label, e.g. recreation, tool-use, spatial-reasoning, medical-imaging.
+domain: my-domain
+
+# Task type selecting the runner adapter and verifier path.
+#   text       -> model replies with text; scored by exact_match/contains_any/
+#                 regex_match/set_f1/llm_judge.
+#   tool-task  -> agent emits structured tool actions inside a hermetic
+#                 sandbox; scored by state_check.
+task_type: text
+
+# Verifier/scorer configuration. v1 supports exact_match, contains_any,
+# regex_match, set_f1, state_check, llm_judge. If you use llm_judge you must
+# also pin an llm_judge block (see schemas/benchmark.schema.json).
+metric:
+  verifier: exact_match
+  params:
+    case_sensitive: false
+    trim: true
+    normalize_whitespace: true
+
+# Benchmark manifest/fixture version (semver-ish). Bump when cases or expected
+# values change.
+version: "0.1.0"
+
+# Authorship/provenance metadata. `name` is required; contact/url are optional.
+contributor:
+  name: Your Name
+  contact: https://example.org/your-contact
+
+# SPDX license identifier or 'proprietary'. Reference benchmarks use CC0-1.0.
+license: CC0-1.0
+
+# Glob (relative to this directory) selecting case files. Resolved safely by
+# the loader; case files cannot escape the benchmark directory.
+case_glob: "cases/*.yaml"
+
+# Benchmark-level tags. Free-form lowercase strings. The case-level 'smoke'
+# tag is reserved for case files (see cases/sample-case.yaml).
+tags:
+  - my-domain
+
+# Maturity status. 'experimental' for new contributions; 'stable' once the
+# suite maintainers have reviewed and frozen the fixture set.
+status: experimental
+
+# Optional pinned prompt template for reproducibility.
+prompt_template:
+  version: "1"
+  template: |
+    You are given a task. Reply with only the answer, in lowercase, with no
+    extra punctuation or explanation.
+
+    Task: {input}
+
+    Answer:
+
+# Default sampling parameters for the benchmark; overridable per run.
+sampling:
+  temperature: 0.0

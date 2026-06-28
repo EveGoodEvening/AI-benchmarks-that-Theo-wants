@@ -1,0 +1,38 @@
+# Sample case for the benchmark template.
+#
+# Copy this file to cases/<your-case-id>.yaml and edit the fields below. Every
+# field is validated against schemas/case.schema.json by
+# `ai-bench validate <your-benchmark-dir>`. See CONTRIBUTING.md.
+schema_version: "1"
+
+# Stable case identifier, unique within this benchmark. Lowercase, digits,
+# hyphens, and underscores only.
+id: sample-case
+
+# Task input. For text benchmarks a string or structured prompt object; for
+# tool-task benchmarks a fixture descriptor (see the git-tooling benchmark for
+# examples).
+input: |
+  Replace this with your task input. The model sees this string (rendered into
+  the prompt template) and must produce the expected answer.
+
+# Expected value for verification. Required and non-null for normal cases; only
+# preserved failure cases (imported via `ai-bench hard-set export`) may set
+# expected: null with an expected_metadata.reason.
+expected: "answer"
+
+# Case-level tags. The 'smoke' value is reserved: cases tagged 'smoke' belong
+# to the benchmark's smoke subset selected by `--tag smoke`. Every benchmark
+# must ship at least one smoke-tagged case so the smoke subset is non-empty.
+tags:
+  - smoke
+
+# Optional difficulty label.
+difficulty: easy
+
+# Origin/licensing metadata for this case.
+provenance:
+  source: "original"
+  author: "Your Name"
+  license: "CC0-1.0"
+  notes: "Replace with provenance notes. Use 'original' for fixtures you wrote from scratch."

@@ -1,6 +1,6 @@
 # README.md Goal Progress Tracker
 
-Implementation state: C01, C02, C03, C04, C05, C06, C07, C08, and C09 implemented and verified; C10-C13 not started.
+Implementation state: C01, C02, C03, C04, C05, C06, C07, C08, C09, and C10 implemented and verified; C11-C13 not started.
 
 Use with: `planning/readme-goal-plan.md`
 
@@ -264,7 +264,7 @@ A future session may run chunks in parallel only when they do not touch the same
 - Review-fix evidence (C09): C09 review findings addressed in `src/ai_bench/failures.py`, `tests/test_failures.py`, and this tracker only: (1) exported case filenames are sanitized to the C02 case-id pattern and the resolved case file path is verified to remain under `cases/`, so malicious `case_id` values carrying path separators (`../`, absolute paths) cannot traverse outside the export (covered by `test_export_confines_path_traversal_case_id` and `test_export_confines_absolute_case_id`); (2) hard-set export preserves per-case `state_check` specs and `verifier` overrides from the source benchmark, copies referenced `input.fixture` files/directories into the export with rewritten fixture paths, and the exported set validates and runs through the public runner (covered by `test_export_git_tooling_hard_set_preserves_fixtures_state_check_and_runs`); (3) records sharing a `case_id` but differing in seed/environment, i.e. distinct determinant sets, export with unique suffixed ids so both same-case variants are retained rather than overwriting each other (covered by `test_export_retains_duplicate_case_id_with_different_seed`); (4) tracker wording and stale counts were refreshed with current verified evidence.
 - Final-fix evidence (C09): Remaining C09 hard-set export defects addressed in `src/ai_bench/failures.py`, `tests/test_failures.py`, and this tracker only: (1) `_copy_fixture_for_export` now walks fixture directories recursively via `os.walk(followlinks=False)` and rejects any symlink encountered in the tree (root or nested descendant) plus any resolved path outside the source benchmark directory, so nested symlinks cannot copy host files into the export (covered by `test_export_rejects_fixture_with_nested_symlink`); (2) hard-set export from a source benchmark manifest with `prompt_template.path` now copies the template file into the export under `prompt_templates/` and rewrites `prompt_template.path` to the copied relative path, so the exported hard set is self-contained and runs without the source benchmark; symlinked template paths are rejected (covered by `test_export_runs_with_path_based_prompt_template` and `test_export_rejects_symlinked_prompt_template_path`). Final verification is recorded above.
 
-### [ ] C10 — Community contribution scaffold + registry + template
+### [x] C10 — Community contribution scaffold + registry + template
 
 - Conventional Commit candidate: `feat(contrib): add benchmark template and validation workflow`
 - Owned files/scope: `benchmarks/_template/**`, `CONTRIBUTING.md`, registry/index support, CLI additions in `src/ai_bench/cli.py`, `tests/test_registry.py`, `tests/test_template.py` (the `ai-bench validate` and `ai-bench validate <benchmark>` commands are delivered in C03 and tested there; C10 only adds template/registry tests and any contributor-facing wrapper).
@@ -273,12 +273,14 @@ A future session may run chunks in parallel only when they do not touch the same
 - Verification: `uv run pytest tests/test_registry.py tests/test_template.py -q`; copy template to temp dir, add one case, run `ai-bench validate` (from C03), mutate manifest, confirm clear failure; registry exclusion check that `ai-bench validate` (no-arg) and the registry do not list or validate `benchmarks/_template/**`.
 - Review criteria: one-command contributor path; no live credentials; duplicate ids caught; registry excludes `benchmarks/_template/**` and reads `tags`/`status` from manifests (frozen by C02) rather than inferring them; licensing/provenance expectations documented; clear validation errors; no new validate command added (reuses C03).
 - Tasks:
-  - [ ] Add benchmark template directory under `benchmarks/_template/**` with manifest stub populating `tags` and `status: experimental`, one sample case (including a `smoke`-tagged case), and verifier guidance.
-  - [ ] Add contributor-facing validation workflow built on the existing `ai-bench validate <benchmark>` and `ai-bench validate` (from C03); no new validate command.
-  - [ ] Add auto-discovered registry/index excluding `benchmarks/_template/**`, sourcing `tags`/`status` from manifest fields frozen by C02.
-  - [ ] Add CONTRIBUTING guide covering provenance, licensing, `experimental` vs `stable` status, and review expectations.
-  - [ ] Add registry and template tests, including the `_template` exclusion check.
-  - [ ] Run and record verification command and scenario.
+  - [x] Add benchmark template directory under `benchmarks/_template/**` with manifest stub populating `tags` and `status: experimental`, one sample case (including a `smoke`-tagged case), and verifier guidance.
+  - [x] Add contributor-facing validation workflow built on the existing `ai-bench validate <benchmark>` and `ai-bench validate` (from C03); no new validate command.
+  - [x] Add auto-discovered registry/index excluding `benchmarks/_template/**`, sourcing `tags`/`status` from manifest fields frozen by C02.
+  - [x] Add CONTRIBUTING guide covering provenance, licensing, `experimental` vs `stable` status, and review expectations.
+  - [x] Add registry and template tests, including the `_template` exclusion check.
+  - [x] Run and record verification command and scenario.
+
+- Verification evidence (C10): Orchestrator verification passed. `uv run pytest tests/test_registry.py tests/test_template.py -q` -> 25 passed. `uv run ai-bench validate benchmarks/_template` -> OK `my-benchmark` cases=1 smoke=1. `uv run ai-bench validate` -> OK `description-label` + `git-tooling`, all 2 real benchmarks valid; template excluded. `uv run ai-bench registry` -> table lists `description-label` + `git-tooling`, excludes template. `uv run ai-bench registry --json` -> JSON array with `description-label` + `git-tooling` metadata. `uv run pytest -q` -> passed, one skipped. C10 checked; C11+ remain unchecked.
 
 ### [ ] C11 — Conformance, smoke, and CI hardening
 

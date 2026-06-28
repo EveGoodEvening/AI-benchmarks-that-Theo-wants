@@ -7,7 +7,10 @@ stub/text-file/replay adapter paths, scores with the C04 verifiers, and writes
 a schema-valid run-record.  The ``failures save``, ``retry``, and
 ``hard-set export`` subcommands are implemented in C09: they preserve failed
 cases into a versioned failure store, replay stored failures, and export
-curated failures as a runnable benchmark subset.
+curated failures as a runnable benchmark subset. The ``ai-bench registry``
+subcommand is implemented in C10: it lists the auto-discovered registry of
+registered benchmarks (excluding ``benchmarks/_template/**``), sourcing
+metadata from each benchmark manifest.
 
 C03 validate behavior:
   * ``ai-bench validate <benchmark>`` loads a benchmark directory, validates
@@ -32,6 +35,7 @@ from typing import Sequence
 from ai_bench import __version__
 from ai_bench import failures as F
 from ai_bench import loader as L
+from ai_bench import registry as REG
 from ai_bench import runner as R
 
 
@@ -245,6 +249,33 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Path to the source benchmark directory to inherit metric/prompt/"
             "sampling config from. Recommended for a directly runnable subset."
+        ),
+    )
+
+    # registry: implemented in C10 (auto-discovered benchmark index).
+    registry = subparsers.add_parser(
+        "registry",
+        help="List registered benchmarks discovered under benchmarks/.",
+        description=(
+            "List the auto-discovered registry of registered benchmarks. "
+            "Discovery excludes benchmarks/_template/** and sources "
+            "id/domain/tags/contributor/license/status/version from each "
+            "benchmark manifest. With --json, emit a JSON-serializable "
+            "index array."
+        ),
+    )
+    registry.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Emit the registry as a JSON array instead of a table.",
+    )
+    registry.add_argument(
+        "--root",
+        default=None,
+        help=(
+            "Repository root to discover under (default: current working "
+            "directory)."
         ),
     )
     return parser
@@ -470,6 +501,34 @@ def _cmd_hard_set_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_registry(args: argparse.Namespace) -> int:
+    """Implement ``ai-bench registry [--json] [--root <root>]``.
+
+    Lists the auto-discovered registry of registered benchmarks. Discovery
+    excludes ``benchmarks/_template/**`` and sources metadata from each
+    benchmark manifest. With ``--json``, emits a JSON-serializable index
+    array; otherwise prints a human-readable table.
+    """
+    root = Path(args.root) if args.root else _repo_root_for_discovery()
+    try:
+        entries = REG.build_registry(root)
+    except L.ValidationError as exc:
+        print("ai-bench: benchmark discovery failed:", file=sys.stderr)
+        print(L.format_validation_errors(exc), file=sys.stderr)
+        return 1
+    except L.LoadError as exc:
+        print(f"ai-bench: benchmark discovery failed: {exc}", file=sys.stderr)
+        return 1
+
+    if args.as_json:
+        import json
+
+        print(json.dumps([e.to_dict() for e in entries], indent=2, sort_keys=True))
+        return 0
+    print(REG.format_registry(entries))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -503,6 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    if args.command == "registry":
+        return _cmd_registry(args)
     print(f"ai-bench: unknown command {args.command!r}.", file=sys.stderr)
     return 2
 
